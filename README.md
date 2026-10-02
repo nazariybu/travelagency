@@ -11,7 +11,22 @@ This guide installs the project on two Ubuntu 22.04 virtual machines.
 Change the IP addresses if your network is different.
 
 ---
+## How it works
 
+```mermaid
+flowchart LR
+    U["User<br/>(browser)"] -->|"HTTP :8080"| APP
+
+    subgraph PVE["Proxmox host, network 192.168.18.0/24"]
+        APP["vm-app<br/>192.168.18.102<br/>Tomcat 9 + Java 17<br/>ROOT.war"]
+        DB[("vm-db<br/>192.168.18.101<br/>MySQL 8<br/>database: travelagency")]
+        APP -->|"JDBC :3306<br/>user: travel"| DB
+    end
+```
+
+The user opens the site on `vm-app` (port 8080). The application on `vm-app` reads and writes data in MySQL on `vm-db` (port 3306).
+
+---
 ## 1. vm-db (database)
 
 ### 1.1 Install MySQL
