@@ -1,6 +1,7 @@
 # Report: Containerization of the Travel Agency project
 
-Date: 03.10.2026 
+Date: 03.10.2026
+
 Project: https://github.com/nazariybu/travelagency
 
 ## Goal
