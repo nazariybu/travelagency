@@ -252,7 +252,6 @@ sudo ufw allow 8080/tcp
 2. Create a new user.
 3. Log in with this user.
 
-The test users from `insert.sql` cannot log in. Their passwords are saved as plain text, but the application expects encrypted passwords.
 
 ## Useful commands
 
