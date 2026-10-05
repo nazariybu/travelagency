@@ -1,0 +1,15 @@
+# Settings for app.yml. Change them here, not in the playbook.
+
+# --- Database ---
+db_name: travelagency
+db_user: travel
+db_password: "{{ lookup('ansible.builtin.env', 'DB_PASSWORD') }}"  # secret: comes from .env, not stored in Git
+db_allowed_hosts: "192.168.18.%"  # who can connect to MySQL
+db_host: "{{ hostvars[groups['db'][0]].ansible_host }}"  # IP of the first db server
+
+# --- Application ---
+app_repo: https://github.com/nazariybu/travelagency
+app_version: main
+app_src_dir: /opt/travelagency
+java_home: /usr/lib/jvm/java-17-openjdk-amd64
+tomcat_webapps: /var/lib/tomcat9/webapps

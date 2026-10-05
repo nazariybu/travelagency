@@ -1,0 +1,5 @@
+# Managed by Ansible. Database settings for the TravelAgency app.
+[Service]
+Environment="DB_TRAVELAGENCY_URL=jdbc:mysql://{{ db_host }}:3306/{{ db_name }}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8"
+Environment="DB_TRAVELAGENCY_USER={{ db_user }}"
+Environment="DB_TRAVELAGENCY_PASSWORD={{ db_password }}"

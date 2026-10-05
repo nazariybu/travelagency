@@ -1,0 +1,4 @@
+# Extra Ansible modules
+collections:
+  - name: community.mysql     # MySQL database and users (app.yml)
+  - name: community.proxmox   # create VMs in Proxmox (provision.yml)

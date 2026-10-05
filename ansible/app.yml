@@ -1,0 +1,179 @@
+---
+# ============================================================
+# Play 0: check that the secrets from .env are loaded
+# ============================================================
+- name: Check settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - group_vars/vars.yml
+
+
+  tasks:
+    - name: Stop if the database password is not set
+      ansible.builtin.assert:
+        that: db_password | length > 0
+        fail_msg: "DB_PASSWORD is empty. Run:  set -a; source .env; set +a"
+        quiet: true
+
+# ============================================================
+# Play 1: database server
+# ============================================================
+- name: Set up MySQL
+  hosts: db
+  become: true
+  vars_files:
+    - group_vars/vars.yml   # database and application settings
+
+  tasks:
+    - name: Install MySQL and the Python library that Ansible needs
+      ansible.builtin.apt:
+        name:
+          - mysql-server
+          - python3-pymysql
+        state: present
+        update_cache: true
+
+    - name: Allow connections from other VMs
+      ansible.builtin.lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+      notify: Restart mysql
+
+    - name: Restart MySQL now if the config changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create the database
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        encoding: utf8mb4
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Create the user and give access to the database
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        host: "{{ db_allowed_hosts }}"
+        password: "{{ db_password }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      no_log: true   # do not print the password in the output
+
+  handlers:
+    - name: Restart mysql
+      ansible.builtin.service:
+        name: mysql
+        state: restarted
+
+# ============================================================
+# Play 2: application server(s)
+# ============================================================
+- name: Build and deploy the application
+  hosts: app
+  become: true
+  vars_files:
+    - group_vars/vars.yml   # database and application settings
+
+  tasks:
+    - name: Install Java 17, Maven, Tomcat 9 and Git
+      ansible.builtin.apt:
+        name:
+          - openjdk-17-jdk
+          - maven
+          - tomcat9
+          - git
+        state: present
+        update_cache: true
+
+    - name: Download the source code
+      ansible.builtin.git:
+        repo: "{{ app_repo }}"
+        dest: "{{ app_src_dir }}"
+        version: "{{ app_version }}"
+      register: source
+
+    - name: Check if the WAR file is already built
+      ansible.builtin.stat:
+        path: "{{ app_src_dir }}/target/TravelAgency.war"
+      register: war
+
+    - name: Build the project (only if the code changed or there is no WAR)
+      ansible.builtin.command:
+        cmd: mvn -B clean package
+        chdir: "{{ app_src_dir }}"
+      environment:
+        JAVA_HOME: "{{ java_home }}"
+      when: source.changed or not war.stat.exists
+      changed_when: true
+
+    - name: Tell Tomcat to use Java 17
+      ansible.builtin.lineinfile:
+        path: /etc/default/tomcat9
+        regexp: '^JAVA_HOME='
+        line: "JAVA_HOME={{ java_home }}"
+      notify: Redeploy app
+
+    - name: Create the folder for extra service settings
+      ansible.builtin.file:
+        path: /etc/systemd/system/tomcat9.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Give Tomcat the database address, user and password
+      ansible.builtin.template:
+        src: travelagency.conf.j2
+        dest: /etc/systemd/system/tomcat9.service.d/travelagency.conf
+        mode: "0600"
+      notify: Redeploy app
+
+    - name: Copy the WAR file to Tomcat as ROOT.war
+      ansible.builtin.copy:
+        src: "{{ app_src_dir }}/target/TravelAgency.war"
+        dest: "{{ tomcat_webapps }}/ROOT.war"
+        remote_src: true
+        owner: tomcat
+        group: tomcat
+        mode: "0644"
+      notify: Redeploy app
+
+    - name: Redeploy now if something changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Make sure Tomcat is running and starts on boot
+      ansible.builtin.systemd:
+        name: tomcat9
+        state: started
+        enabled: true
+
+    - name: Wait until the site answers
+      ansible.builtin.uri:
+        url: http://localhost:8080/form-login
+        status_code: 200
+      register: site
+      until: site.status == 200
+      retries: 12
+      delay: 5
+
+  # Handlers run in this order, only when a task above reports a change.
+  handlers:
+    - name: Stop Tomcat
+      ansible.builtin.systemd:
+        name: tomcat9
+        state: stopped
+      listen: Redeploy app
+
+    - name: Remove the old unpacked site
+      ansible.builtin.file:
+        path: "{{ tomcat_webapps }}/ROOT"
+        state: absent
+      listen: Redeploy app
+
+    - name: Start Tomcat with the new settings
+      ansible.builtin.systemd:
+        name: tomcat9
+        state: started
+        daemon_reload: true
+      listen: Redeploy app

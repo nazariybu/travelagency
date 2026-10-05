@@ -1,74 +1,245 @@
-# Travel Agency project
+# How to deploy Travel Agency with Ansible
 
-<img src="./images/04.png" style="width: 600px; height: 350px;"><br>
-<br>
+This guide shows how to create two servers in Proxmox and run the Travel Agency app on them.
 
-## Project Overview
+- **vm-app** (`192.168.18.101`): Java 17, Maven, Tomcat 9. It builds and runs the app.
+- **vm-db** (`192.168.18.102`): MySQL. It stores the data.
 
-This project is a web application for a travel agency, allowing users to find and book hotels in various countries.
-It has a separate managerial role that can add hotels and rooms to the system and view all users and their orders.
-The application is built using Maven, Hibernate, Spring MVC (Thymeleaf or JSP + JSTL), and Spring Security.
-
-<img src="./images/01.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/02.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/03.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/05.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/06.png" style="width: 600px; height: 300px;"><br>
-
-## If you log in as an administrator, you can
-
-<img src="./images/07.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/08.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/09.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/10.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/11.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/12.png" style="width: 600px; height: 300px;"><br>
-<img src="./images/13.png" style="width: 600px; height: 300px;"><br>
-<br>
-
-## Technologies
-
-- Java
-- Maven
-- Hibernate
-- Spring MVC
-- Thymeleaf
-- Spring Security
-- IntelliJ (IDE)
-- MySQL
-
-### Technical Details
-
-- **Programming Language back-end:** Java
-- **Database:** MySql
-- **Required Tools:** Java 17, Maven 3.6.3
-
-### Running the Project
-
-1. **Build the Project:**
-   Execute the following command in the `TravelAgency` directory:
-```bash
-mvn clean package
 ```
-
-2. **Run the Project:**
-
-After successful building, move the .war file in the Apache TomCat:
-
-```text
-   The application will start on 8080 port.
+ your PC (Ansible)
+      │
+      ├── provision.yml ──► Proxmox (192.168.18.200) ──► creates vm-app and vm-db
+      │
+      └── app.yml ──────► vm-db:  MySQL
+                          vm-app: Tomcat ──► http://192.168.18.101:8080
 ```
-
-* **Database Configuration**
-
-In the application's configuration file (application.properties), the path and connection data to the database are obtained from the following environment variables:
-
-    DB_TRAVELAGENCY_URL
-    DB_TRAVELAGENCY_USER
-    DB_TRAVELAGENCY_PASSWORD
-
-Before running, ensure that the MySql database contains a database, for example travelagency.
-
-Wishing you success with the "Travel Agency" project!
 
 ---
+
+## 1. Files in this folder
+
+| File | What it does |
+|------|--------------|
+| `ansible.cfg` | Main Ansible settings (inventory file, no SSH key check). |
+| `inventory.ini` | List of servers and their IP addresses. |
+| `requirements.yml` | Extra Ansible collections you must install. |
+| `provision.yml` | Creates and starts the two containers in Proxmox. |
+| `app.yml` | Installs MySQL, builds the app, and runs it in Tomcat. |
+| `group_vars/vars.yml` | Settings: database name, user, Git repo, paths. |
+| `travelagency.conf.j2` | Template. Gives the database address, user and password to Tomcat. |
+| `.env.example` | Example of the secrets file. |
+| `.env` | Your real secrets. **Do not put it in Git.** |
+
+---
+
+## 2. What you need
+
+### On your PC (the Ansible machine)
+
+- Linux (or WSL on Windows)
+- Ansible 2.15 or newer
+- Python libraries `proxmoxer` and `requests`
+- An SSH key at `~/.ssh/id_ed25519` (and `~/.ssh/id_ed25519.pub`)
+
+Install the tools (Ubuntu / Debian):
+
+```bash
+sudo apt update
+sudo apt install -y ansible python3-proxmoxer python3-requests
+```
+
+Make an SSH key if you do not have one:
+
+```bash
+ssh-keygen -t ed25519
+```
+
+### In Proxmox
+
+1. A user `ansible@pve` with an API token named `ansible`.
+   - Go to **Datacenter → Permissions → Users** and add the user.
+   - Go to **Datacenter → Permissions → API Tokens** and add the token.
+   - Copy the **secret**. Proxmox shows it only once.
+   - Give the user (and the token) enough rights, for example the role `PVEVMAdmin` on `/` plus `PVEDatastoreUser` on the storage.
+2. The Ubuntu 22.04 container template:
+   - Go to **local → CT Templates → Templates** and download `ubuntu-22.04-standard`.
+3. Storage `local-lvm` and network bridge `vmbr0` (these exist by default).
+
+---
+
+## 3. First setup
+
+Go to the Ansible folder:
+
+```bash
+cd travelagency/ansible
+```
+
+### 3.1 Install the Ansible collections
+
+```bash
+ansible-galaxy collection install -r requirements.yml
+```
+
+### 3.2 Make the secrets file
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Put your real values in it:
+
+```ini
+DB_PASSWORD=YourStrongPassword
+PROXMOX_TOKEN_SECRET=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+> **Tip:** Do not use the symbols `%`, `"` or `\` in `DB_PASSWORD`. They break the Tomcat settings file.
+
+### 3.3 Load the secrets
+
+Run this in **every new terminal** before you run a playbook:
+
+```bash
+set -a; source .env; set +a
+```
+
+Check that it worked:
+
+```bash
+echo "$DB_PASSWORD"
+```
+
+---
+
+## 4. Change the settings (if needed)
+
+If your network is different, change these places:
+
+| What | Where |
+|------|-------|
+| Proxmox IP, node name, template, disk, CPU, RAM | `provision.yml` |
+| Container IDs, names and IPs | `provision.yml` → `containers` |
+| Gateway (`gw=192.168.18.1`) | `provision.yml` → `netif` |
+| Server IPs for Ansible | `inventory.ini` |
+| Database name / user, who can connect | `group_vars/vars.yml` |
+| Git repo and branch of the app | `group_vars/vars.yml` → `app_repo`, `app_version` |
+
+> The IPs in `provision.yml` and `inventory.ini` must be the same.
+
+---
+
+## 5. Create the servers
+
+```bash
+ansible-playbook provision.yml
+```
+
+This creates the containers `301 (vm-app)` and `302 (vm-db)` and starts them.
+Your public SSH key is copied into them, so you can log in as `root`.
+
+Check that you can reach them:
+
+```bash
+ansible all -m ping
+```
+
+You should see `"ping": "pong"` for both servers.
+
+---
+
+## 6. Deploy the app
+
+```bash
+ansible-playbook app.yml
+```
+
+What happens:
+
+1. **Check settings.** Stops if `DB_PASSWORD` is empty.
+2. **vm-db:**
+   - Installs MySQL.
+   - Lets other servers connect (`bind-address = 0.0.0.0`).
+   - Creates the database `travelagency` and the user `travel`.
+3. **vm-app:**
+   - Installs Java 17, Maven, Tomcat 9 and Git.
+   - Downloads the code from GitHub.
+   - Builds the WAR file with Maven (only when the code changed).
+   - Writes the database settings for Tomcat.
+   - Copies the WAR to Tomcat as `ROOT.war` and restarts Tomcat.
+   - Waits until the site answers.
+
+The first run can take **5 to 10 minutes** (Maven downloads many files).
+
+---
+
+## 7. Open the app
+
+Open in your browser:
+
+```
+http://192.168.18.101:8080
+```
+
+The login page is at `/form-login`.
+
+---
+
+## 8. Update the app
+
+Push your new code to GitHub, then run again:
+
+```bash
+set -a; source .env; set +a
+ansible-playbook app.yml
+```
+
+Ansible pulls the new code, builds it again and restarts Tomcat.
+If nothing changed, nothing is restarted.
+
+> **Warning:** The app has `hibernate.hbm2ddl.auto: create` in `application.properties`.
+> This means the database tables are **deleted and made again every time Tomcat starts**.
+> All saved data (users, orders) is lost. Change it to `update` if you want to keep data.
+
+---
+
+## 9. Useful commands
+
+| Task | Command |
+|------|---------|
+| Check playbook syntax | `ansible-playbook app.yml --syntax-check` |
+| Dry run (no changes) | `ansible-playbook app.yml --check` |
+| Show more details | `ansible-playbook app.yml -v` (or `-vvv`) |
+| Run only on the database server | `ansible-playbook app.yml --limit db` |
+| Log in to a server | `ssh root@192.168.18.101` |
+| Tomcat logs | `ssh root@192.168.18.101 journalctl -u tomcat9 -f` |
+| MySQL status | `ssh root@192.168.18.102 systemctl status mysql` |
+
+---
+
+## 10. Common problems
+
+| Error | Why | Fix |
+|-------|-----|-----|
+| `'proxmox_token' is undefined` or empty token | Secrets are not loaded. | Run `set -a; source .env; set +a`. |
+| `'db_password' is undefined` or `DB_PASSWORD is empty` | Secrets are not loaded. | Run `set -a; source .env; set +a`. |
+| `No module named 'proxmoxer'` | Python library is missing. | `sudo apt install python3-proxmoxer python3-requests` |
+| `CERTIFICATE_VERIFY_FAILED` | Proxmox uses a self-signed certificate. | Keep `validate_certs: false` in `provision.yml`. |
+| `couldn't resolve module/action 'community.proxmox...'` | Collections are not installed. | `ansible-galaxy collection install -r requirements.yml` |
+| `Could not find or access 'travelagency.conf.j2'` | Template file is missing. | Make sure `travelagency.conf.j2` is in this folder. |
+| `UNREACHABLE` / `Permission denied (publickey)` | SSH key is wrong or the server is off. | Check the container is running and your key is `~/.ssh/id_ed25519`. |
+| `Public Key Retrieval is not allowed` | MySQL 8 connection setting. | Keep `allowPublicKeyRetrieval=true` in `travelagency.conf.j2`. |
+| `Wait until the site answers` fails | Tomcat could not start the app. | Look at `journalctl -u tomcat9` on vm-app. |
+| `Non-blocking file handles detected` | Terminal issue (some IDE terminals). | Add `</dev/null` at the end of the command. |
+
+---
+
+## 11. Security notes
+
+- **Never commit `.env` to Git.** Add this line to the main `.gitignore`:
+  ```
+  ansible/.env
+  ```
+- If a secret was shared by mistake, make a new one (new Proxmox token, new DB password).
+- The database user `travel` can connect only from `192.168.18.%`.
