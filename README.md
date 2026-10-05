@@ -5,13 +5,45 @@ This guide shows how to create two servers in Proxmox and run the Travel Agency 
 - **vm-app** (`192.168.18.101`): Java 17, Maven, Tomcat 9. It builds and runs the app.
 - **vm-db** (`192.168.18.102`): MySQL. It stores the data.
 
+## How it works
+
+```mermaid
+flowchart LR
+    PC["Your PC<br/>(Ansible)"]
+    U["User<br/>(browser)"]
+
+    subgraph PVE["Proxmox host 192.168.18.200"]
+        APP["vm-app (CT 301)<br/>192.168.18.101<br/>Java 17 + Tomcat 9"]
+        DB[("vm-db (CT 302)<br/>192.168.18.102<br/>MySQL")]
+        APP -->|"JDBC :3306"| DB
+    end
+
+    PC -->|"1. provision.yml<br/>Proxmox API :8006"| PVE
+    PC -->|"2. app.yml<br/>SSH :22"| APP
+    PC -->|"2. app.yml<br/>SSH :22"| DB
+    U -->|"HTTP :8080"| APP
 ```
- your PC (Ansible)
-      │
-      ├── provision.yml ──► Proxmox (192.168.18.200) ──► creates vm-app and vm-db
-      │
-      └── app.yml ──────► vm-db:  MySQL
-                          vm-app: Tomcat ──► http://192.168.18.101:8080
+
+1. `provision.yml` asks Proxmox to create and start the two containers.
+2. `app.yml` connects to the containers over SSH, installs MySQL on `vm-db`,
+   and builds and runs the app on `vm-app`.
+3. The user opens `http://192.168.18.101:8080`. The app keeps its data in MySQL on `vm-db`.
+
+## Files
+
+```
+ansible/
+├── ansible.cfg              # Ansible settings
+├── inventory.ini            # servers and their IP addresses
+├── requirements.yml         # extra Ansible collections
+├── provision.yml            # step 1: create the containers in Proxmox
+├── app.yml                  # step 2: install MySQL, build and run the app
+├── travelagency.conf.j2     # template: database settings for Tomcat
+├── group_vars/
+│   └── vars.yml             # database name, user, Git repo, paths
+├── .env.example             # example of the secrets file
+├── .env                     # your real secrets (not in Git)
+└── .gitignore               # keeps .env out of Git
 ```
 
 ---
