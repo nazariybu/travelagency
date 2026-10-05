@@ -29,8 +29,9 @@ flowchart LR
    and builds and runs the app on `vm-app`.
 3. The user opens `http://192.168.18.101:8080`. The app keeps its data in MySQL on `vm-db`.
 
-## Files
+---
 
+## 1. Files in this folder
 ```
 ansible/
 ├── ansible.cfg              # Ansible settings
@@ -45,11 +46,6 @@ ansible/
 ├── .env                     # your real secrets (not in Git)
 └── .gitignore               # keeps .env out of Git
 ```
-
----
-
-## 1. Files in this folder
-
 | File | What it does |
 |------|--------------|
 | `ansible.cfg` | Main Ansible settings (inventory file, no SSH key check). |
