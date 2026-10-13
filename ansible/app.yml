@@ -1,4 +1,7 @@
 ---
+# Run:  set -a; source .env; set +a     (load secrets, once per terminal)
+#       ansible-playbook app.yml
+
 # ============================================================
 # Play 0: check that the secrets from .env are loaded
 # ============================================================
@@ -6,9 +9,6 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  vars_files:
-    - group_vars/vars.yml
-
 
   tasks:
     - name: Stop if the database password is not set
@@ -23,8 +23,6 @@
 - name: Set up MySQL
   hosts: db
   become: true
-  vars_files:
-    - group_vars/vars.yml   # database and application settings
 
   tasks:
     - name: Install MySQL and the Python library that Ansible needs
@@ -74,9 +72,7 @@
 - name: Build and deploy the application
   hosts: app
   become: true
-  vars_files:
-    - group_vars/vars.yml   # database and application settings
-
+  
   tasks:
     - name: Install Java 17, Maven, Tomcat 9 and Git
       ansible.builtin.apt:

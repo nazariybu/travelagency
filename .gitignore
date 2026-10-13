@@ -70,3 +70,4 @@ test-results/
 
 # General
 HELP.md
+.env

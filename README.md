@@ -41,7 +41,7 @@ ansible/
 ├── app.yml                  # step 2: install MySQL, build and run the app
 ├── travelagency.conf.j2     # template: database settings for Tomcat
 ├── group_vars/
-│   └── vars.yml             # database name, user, Git repo, paths
+│   └── all.yml             # database name, user, Git repo, paths
 ├── .env.example             # example of the secrets file
 ├── .env                     # your real secrets (not in Git)
 └── .gitignore               # keeps .env out of Git
@@ -53,7 +53,7 @@ ansible/
 | `requirements.yml` | Extra Ansible collections you must install. |
 | `provision.yml` | Creates and starts the two containers in Proxmox. |
 | `app.yml` | Installs MySQL, builds the app, and runs it in Tomcat. |
-| `group_vars/vars.yml` | Settings: database name, user, Git repo, paths. |
+| `group_vars/all.yml` | Settings: database password, and Proxmox Token. |
 | `travelagency.conf.j2` | Template. Gives the database address, user and password to Tomcat. |
 | `.env.example` | Example of the secrets file. |
 | `.env` | Your real secrets. **Do not put it in Git.** |
@@ -69,12 +69,30 @@ ansible/
 - Python libraries `proxmoxer` and `requests`
 - An SSH key at `~/.ssh/id_ed25519` (and `~/.ssh/id_ed25519.pub`)
 
-Install the tools (Ubuntu / Debian):
+Install the tools (Ubuntu 22.04 / Debian):
 
 ```bash
+# 1. Base packages and UTF-8 locale (new Ansible does not start without it)
 sudo apt update
-sudo apt install -y ansible python3-proxmoxer python3-requests
+sudo apt install -y software-properties-common python3-pip python3-requests locales
+sudo locale-gen en_US.UTF-8
+sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# 2. Ansible from the official PPA
+sudo add-apt-repository --yes --update ppa:ansible/ansible
+sudo apt install -y ansible
+ansible --version
+
+# 3. proxmoxer 2.3+ for community.proxmox 
+sudo pip3 install "proxmoxer>=2.3"
+python3 -c "import proxmoxer; print(proxmoxer.__version__)"
+
+# 4. Ansible collections
+cd ansible
+ansible-galaxy collection install -r requirements.yml
 ```
+
 
 Make an SSH key if you do not have one:
 
@@ -151,8 +169,8 @@ If your network is different, change these places:
 | Container IDs, names and IPs | `provision.yml` → `containers` |
 | Gateway (`gw=192.168.18.1`) | `provision.yml` → `netif` |
 | Server IPs for Ansible | `inventory.ini` |
-| Database name / user, who can connect | `group_vars/vars.yml` |
-| Git repo and branch of the app | `group_vars/vars.yml` → `app_repo`, `app_version` |
+| Database name / user, who can connect | `group_vars/all.yml` |
+| Git repo and branch of the app | `group_vars/all.yml` → `app_repo`, `app_version` |
 
 > The IPs in `provision.yml` and `inventory.ini` must be the same.
 
@@ -226,10 +244,6 @@ ansible-playbook app.yml
 Ansible pulls the new code, builds it again and restarts Tomcat.
 If nothing changed, nothing is restarted.
 
-> **Warning:** The app has `hibernate.hbm2ddl.auto: create` in `application.properties`.
-> This means the database tables are **deleted and made again every time Tomcat starts**.
-> All saved data (users, orders) is lost. Change it to `update` if you want to keep data.
-
 ---
 
 ## 9. Useful commands
@@ -252,7 +266,6 @@ If nothing changed, nothing is restarted.
 |-------|-----|-----|
 | `'proxmox_token' is undefined` or empty token | Secrets are not loaded. | Run `set -a; source .env; set +a`. |
 | `'db_password' is undefined` or `DB_PASSWORD is empty` | Secrets are not loaded. | Run `set -a; source .env; set +a`. |
-| `No module named 'proxmoxer'` | Python library is missing. | `sudo apt install python3-proxmoxer python3-requests` |
 | `CERTIFICATE_VERIFY_FAILED` | Proxmox uses a self-signed certificate. | Keep `validate_certs: false` in `provision.yml`. |
 | `couldn't resolve module/action 'community.proxmox...'` | Collections are not installed. | `ansible-galaxy collection install -r requirements.yml` |
 | `Could not find or access 'travelagency.conf.j2'` | Template file is missing. | Make sure `travelagency.conf.j2` is in this folder. |
@@ -260,14 +273,3 @@ If nothing changed, nothing is restarted.
 | `Public Key Retrieval is not allowed` | MySQL 8 connection setting. | Keep `allowPublicKeyRetrieval=true` in `travelagency.conf.j2`. |
 | `Wait until the site answers` fails | Tomcat could not start the app. | Look at `journalctl -u tomcat9` on vm-app. |
 | `Non-blocking file handles detected` | Terminal issue (some IDE terminals). | Add `</dev/null` at the end of the command. |
-
----
-
-## 11. Security notes
-
-- **Never commit `.env` to Git.** Add this line to the main `.gitignore`:
-  ```
-  ansible/.env
-  ```
-- If a secret was shared by mistake, make a new one (new Proxmox token, new DB password).
-- The database user `travel` can connect only from `192.168.18.%`.
