@@ -6,7 +6,7 @@
 ![Docker](https://img.shields.io/badge/Docker-agent-2496ED?logo=docker&logoColor=white)
 
 This guide shows how to set up Jenkins with a separate build agent in Proxmox LXC containers.
-Everything is done with Ansible.
+
 
 ## Contents
 
