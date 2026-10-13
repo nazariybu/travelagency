@@ -1,6 +1,8 @@
 ---
 # Run:  set -a; source .env; set +a     (load secrets, once per terminal)
 #       ansible-playbook app.yml
+# From Jenkins: ansible-playbook app.yml -e war_file=/path/to/TravelAgency.war
+
 
 # ============================================================
 # Play 0: check that the secrets from .env are loaded
@@ -90,11 +92,13 @@
         dest: "{{ app_src_dir }}"
         version: "{{ app_version }}"
       register: source
+      when: war_file is not defined     # Jenkins gives a ready WAR
 
     - name: Check if the WAR file is already built
       ansible.builtin.stat:
         path: "{{ app_src_dir }}/target/TravelAgency.war"
       register: war
+      when: war_file is not defined
 
     - name: Build the project (only if the code changed or there is no WAR)
       ansible.builtin.command:
@@ -102,7 +106,9 @@
         chdir: "{{ app_src_dir }}"
       environment:
         JAVA_HOME: "{{ java_home }}"
-      when: source.changed or not war.stat.exists
+      when:
+        - war_file is not defined
+        - source.changed or not war.stat.exists
       changed_when: true
 
     - name: Tell Tomcat to use Java 17
@@ -127,9 +133,9 @@
 
     - name: Copy the WAR file to Tomcat as ROOT.war
       ansible.builtin.copy:
-        src: "{{ app_src_dir }}/target/TravelAgency.war"
+        src: "{{ war_file | default(app_src_dir + '/target/TravelAgency.war') }}"
         dest: "{{ tomcat_webapps }}/ROOT.war"
-        remote_src: true
+        remote_src: "{{ war_file is not defined }}"   # from Jenkins: copy from the agent
         owner: tomcat
         group: tomcat
         mode: "0644"
