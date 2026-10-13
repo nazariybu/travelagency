@@ -1,4 +1,4 @@
-# Project Report: Travel Agency Deploy with Ansible
+# Report: Travel Agency Deploy with Ansible
 
 ## 1. Goal
 
