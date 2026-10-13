@@ -2,3 +2,6 @@
 collections:
   - name: community.mysql     # MySQL database and users (app.yml)
   - name: community.proxmox   # create VMs in Proxmox (provision.yml)
+  - name: community.docker    # run Jenkins in Docker (jenkins.yml)
+  - name: ansible.posix       # SSH keys (jenkins.yml)
+  

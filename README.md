@@ -1,275 +1,294 @@
-# How to deploy Travel Agency with Ansible
+# Jenkins Setup for Travel Agency
 
-This guide shows how to create two servers in Proxmox and run the Travel Agency app on them.
+![Jenkins](https://img.shields.io/badge/Jenkins-LTS-D24939?logo=jenkins&logoColor=white)
+![Ansible](https://img.shields.io/badge/Ansible-2.15%2B-EE0000?logo=ansible&logoColor=white)
+![Proxmox](https://img.shields.io/badge/Proxmox-LXC-E57000?logo=proxmox&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-agent-2496ED?logo=docker&logoColor=white)
 
-- **vm-app** (`192.168.18.101`): Java 17, Maven, Tomcat 9. It builds and runs the app.
-- **vm-db** (`192.168.18.102`): MySQL. It stores the data.
+This guide shows how to set up Jenkins with a separate build agent in Proxmox LXC containers.
+Everything is done with Ansible.
+
+## Contents
+
+1. [Servers](#servers)
+2. [How it works](#how-it-works)
+3. [Progress](#progress)
+4. [Before you start](#1-before-you-start)
+5. [Create the containers](#2-create-the-containers)
+6. [Install Jenkins](#3-install-jenkins)
+7. [First start wizard](#4-first-start-wizard)
+8. [Connect the agent](#5-connect-the-agent)
+9. [Test the agent](#6-test-the-agent)
+10. [Useful commands](#7-useful-commands)
+11. [Common problems](#8-common-problems)
+12. [Next steps](#9-next-steps)
+
+---
+
+## Servers
+
+| Name | CT ID | IP | CPU / RAM / Disk | What runs there |
+|------|-------|----|------------------|-----------------|
+| **vm-jenkins** | 303 | `192.168.18.103` | 1 / 2 GB / 16 GB | Docker, Jenkins controller |
+| **vm-agent** | 304 | `192.168.18.104` | 4 / 4 GB / 32 GB | Docker, Java 17, Ansible |
+
+Both are Ubuntu 22.04 LXC containers on Proxmox (`192.168.18.200`).
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    PC["Your PC<br/>(Ansible)"]
-    U["User<br/>(browser)"]
+    PC["Ansible PC"]
+    GH["GitHub"]
 
-    subgraph PVE["Proxmox host 192.168.18.200"]
-        APP["vm-app (CT 301)<br/>192.168.18.101<br/>Java 17 + Tomcat 9"]
-        DB[("vm-db (CT 302)<br/>192.168.18.102<br/>MySQL")]
-        APP -->|"JDBC :3306"| DB
+    subgraph PVE["Proxmox 192.168.18.200"]
+        J["vm-jenkins (CT 303)<br/>Jenkins in Docker<br/>:8080"]
+        AG["vm-agent (CT 304)<br/>Docker + Java 17 + Ansible"]
+        APP["vm-app (CT 301)"]
+        DB[("vm-db (CT 302)")]
+        J -->|"SSH :22"| AG
+        AG -->|"deploy (SSH)"| APP
+        AG -->|"deploy (SSH)"| DB
     end
 
-    PC -->|"1. provision.yml<br/>Proxmox API :8006"| PVE
-    PC -->|"2. app.yml<br/>SSH :22"| APP
-    PC -->|"2. app.yml<br/>SSH :22"| DB
-    U -->|"HTTP :8080"| APP
+    PC -->|"provision.yml"| PVE
+    PC -->|"jenkins.yml"| J
+    PC -->|"jenkins.yml"| AG
+    GH -.->|"webhook (next step)"| J
 ```
 
-1. `provision.yml` asks Proxmox to create and start the two containers.
-2. `app.yml` connects to the containers over SSH, installs MySQL on `vm-db`,
-   and builds and runs the app on `vm-app`.
-3. The user opens `http://192.168.18.101:8080`. The app keeps its data in MySQL on `vm-db`.
+- **Controller** (`vm-jenkins`) only manages jobs. It does not build anything.
+- **Agent** (`vm-agent`) runs all jobs. It builds the code inside Docker containers
+  and can deploy the app with Ansible.
+
+## Progress
+
+| Step | Status |
+|------|--------|
+| Containers `vm-jenkins`, `vm-agent` created | ✅ Done |
+| Jenkins controller running in Docker | ✅ Done |
+| Agent connected over SSH | ✅ Done |
+| Test pipeline (Java, Ansible, Docker, Maven) | ✅ Green |
+| `Jenkinsfile` for the app | ⏳ Next |
+| GitHub webhook | ⏳ Next |
 
 ---
 
-## 1. Files in this folder
-```
-ansible/
-├── ansible.cfg              # Ansible settings
-├── inventory.ini            # servers and their IP addresses
-├── requirements.yml         # extra Ansible collections
-├── provision.yml            # step 1: create the containers in Proxmox
-├── app.yml                  # step 2: install MySQL, build and run the app
-├── travelagency.conf.j2     # template: database settings for Tomcat
-├── group_vars/
-│   └── all.yml             # database name, user, Git repo, paths
-├── .env.example             # example of the secrets file
-├── .env                     # your real secrets (not in Git)
-└── .gitignore               # keeps .env out of Git
-```
+## 1. Before you start
+
+You need the Ansible setup from the `ansible` branch: Ansible 2.15+, `proxmoxer` 2.3+,
+the `.env` file with secrets, and the containers `vm-app` and `vm-db`.
+
+Files used in this guide:
+
 | File | What it does |
 |------|--------------|
-| `ansible.cfg` | Main Ansible settings (inventory file, no SSH key check). |
-| `inventory.ini` | List of servers and their IP addresses. |
-| `requirements.yml` | Extra Ansible collections you must install. |
-| `provision.yml` | Creates and starts the two containers in Proxmox. |
-| `app.yml` | Installs MySQL, builds the app, and runs it in Tomcat. |
-| `group_vars/all.yml` | Settings: database password, and Proxmox Token. |
-| `travelagency.conf.j2` | Template. Gives the database address, user and password to Tomcat. |
-| `.env.example` | Example of the secrets file. |
-| `.env` | Your real secrets. **Do not put it in Git.** |
+| `ansible/provision.yml` | Creates the containers in Proxmox. |
+| `ansible/inventory.ini` | Groups `jenkins` and `jenkins_agent`. |
+| `ansible/jenkins.yml` | Installs Docker, runs Jenkins, prepares the agent. |
+| `ansible/group_vars/all.yml` | Jenkins settings (image, port, agent user). |
+| `ansible/requirements.yml` | Adds `community.docker` and `ansible.posix`. |
 
----
-
-## 2. What you need
-
-### On your PC (the Ansible machine)
-
-- Linux (or WSL on Windows)
-- Ansible 2.15 or newer
-- Python libraries `proxmoxer` and `requests`
-- An SSH key at `~/.ssh/id_ed25519` (and `~/.ssh/id_ed25519.pub`)
-
-Install the tools (Ubuntu 22.04 / Debian):
-
-```bash
-# 1. Base packages and UTF-8 locale (new Ansible does not start without it)
-sudo apt update
-sudo apt install -y software-properties-common python3-pip python3-requests locales
-sudo locale-gen en_US.UTF-8
-sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-
-# 2. Ansible from the official PPA
-sudo add-apt-repository --yes --update ppa:ansible/ansible
-sudo apt install -y ansible
-ansible --version
-
-# 3. proxmoxer 2.3+ for community.proxmox 
-sudo pip3 install "proxmoxer>=2.3"
-python3 -c "import proxmoxer; print(proxmoxer.__version__)"
-
-# 4. Ansible collections
-cd ansible
-ansible-galaxy collection install -r requirements.yml
-```
-
-
-Make an SSH key if you do not have one:
-
-```bash
-ssh-keygen -t ed25519
-```
-
-### In Proxmox
-
-1. A user `ansible@pve` with an API token named `ansible`.
-   - Go to **Datacenter → Permissions → Users** and add the user.
-   - Go to **Datacenter → Permissions → API Tokens** and add the token.
-   - Copy the **secret**. Proxmox shows it only once.
-   - Give the user (and the token) enough rights, for example the role `PVEVMAdmin` on `/` plus `PVEDatastoreUser` on the storage.
-2. The Ubuntu 22.04 container template:
-   - Go to **local → CT Templates → Templates** and download `ubuntu-22.04-standard`.
-3. Storage `local-lvm` and network bridge `vmbr0` (these exist by default).
-
----
-
-## 3. First setup
-
-Go to the Ansible folder:
+Install the collections and load the secrets:
 
 ```bash
 cd travelagency/ansible
-```
-
-### 3.1 Install the Ansible collections
-
-```bash
 ansible-galaxy collection install -r requirements.yml
-```
-
-### 3.2 Make the secrets file
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Put your real values in it:
-
-```ini
-DB_PASSWORD=YourStrongPassword
-PROXMOX_TOKEN_SECRET=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-> **Tip:** Do not use the symbols `%`, `"` or `\` in `DB_PASSWORD`. They break the Tomcat settings file.
-
-### 3.3 Load the secrets
-
-Run this in **every new terminal** before you run a playbook:
-
-```bash
 set -a; source .env; set +a
 ```
 
-Check that it worked:
+Make a key for the agent (once). Jenkins uses it to log in to `vm-agent`:
 
 ```bash
-echo "$DB_PASSWORD"
+ssh-keygen -t ed25519 -N "" -C "jenkins-controller" -f ~/.ssh/jenkins_agent
 ```
 
 ---
 
-## 4. Change the settings (if needed)
+## 2. Create the containers
 
-If your network is different, change these places:
+`provision.yml` has two new containers:
 
-| What | Where |
-|------|-------|
-| Proxmox IP, node name, template, disk, CPU, RAM | `provision.yml` |
-| Container IDs, names and IPs | `provision.yml` → `containers` |
-| Gateway (`gw=192.168.18.1`) | `provision.yml` → `netif` |
-| Server IPs for Ansible | `inventory.ini` |
-| Database name / user, who can connect | `group_vars/all.yml` |
-| Git repo and branch of the app | `group_vars/all.yml` → `app_repo`, `app_version` |
+```yaml
+- { vmid: 303, name: vm-jenkins, ip: 192.168.18.103, cores: 1, memory: 2048, disk: 16, features: [nesting=1] }
+- { vmid: 304, name: vm-agent,   ip: 192.168.18.104, cores: 4, memory: 4096, disk: 32, features: [nesting=1] }
+```
 
-> The IPs in `provision.yml` and `inventory.ini` must be the same.
+> `nesting=1` is needed to run Docker inside an LXC container.
 
----
+`inventory.ini` has two new groups:
 
-## 5. Create the servers
+```ini
+[jenkins]
+vm-jenkins ansible_host=192.168.18.103
+
+[jenkins_agent]
+vm-agent ansible_host=192.168.18.104
+```
+
+Run:
 
 ```bash
 ansible-playbook provision.yml
+ansible jenkins:jenkins_agent -m ping
 ```
 
-This creates the containers `301 (vm-app)` and `302 (vm-db)` and starts them.
-Your public SSH key is copied into them, so you can log in as `root`.
+You should see `"ping": "pong"` for both.
 
-Check that you can reach them:
+---
+
+## 3. Install Jenkins
 
 ```bash
-ansible all -m ping
+ansible-playbook jenkins.yml
 ```
 
-You should see `"ping": "pong"` for both servers.
+| Play | Server | What it does |
+|------|--------|--------------|
+| 1 | vm-jenkins, vm-agent | Installs Docker and starts it. |
+| 2 | vm-jenkins | Runs `jenkins/jenkins:lts-jdk17` on port 8080. Data is kept in the `jenkins_home` volume. Prints the first admin password. |
+| 3 | vm-agent | Installs Java 17 and Git. Installs `ansible-core` and `proxmoxer` with pip. Creates the user `jenkins` in the `docker` group. Adds the key `~/.ssh/jenkins_agent.pub`. Installs Ansible collections. |
+| 4 | vm-app, vm-db | Adds the agent's SSH key to `root`, so Jenkins can deploy. |
+
+At the end you will see:
+
+```
+Open http://192.168.18.103:8080  password: 1a2b3c...
+```
 
 ---
 
-## 6. Deploy the app
+## 4. First start wizard
+
+1. Open **http://192.168.18.103:8080** and enter the password.
+2. Choose **Install suggested plugins**.
+3. Create the admin user.
+4. **Jenkins URL:** keep `http://192.168.18.103:8080/` for now.
+   Later change it to the public tunnel address
+   (**Manage Jenkins → System → Jenkins Location**).
+5. Install extra plugins in **Manage Jenkins → Plugins → Available**:
+   - **SSH Build Agents**
+   - **Docker Pipeline**
+
+---
+
+## 5. Connect the agent
+
+### 5.1 Check the agent
 
 ```bash
-ansible-playbook app.yml
+ansible jenkins_agent -a "java -version"
+ansible jenkins_agent -a "ansible --version"
+ansible jenkins_agent -b -a "su - jenkins -c 'docker ps'"
+ssh -i ~/.ssh/jenkins_agent jenkins@192.168.18.104 "echo OK"
 ```
 
-What happens:
+All four must work. The last one must print `OK`.
 
-1. **Check settings.** Stops if `DB_PASSWORD` is empty.
-2. **vm-db:**
-   - Installs MySQL.
-   - Lets other servers connect (`bind-address = 0.0.0.0`).
-   - Creates the database `travelagency` and the user `travel`.
-3. **vm-app:**
-   - Installs Java 17, Maven, Tomcat 9 and Git.
-   - Downloads the code from GitHub.
-   - Builds the WAR file with Maven (only when the code changed).
-   - Writes the database settings for Tomcat.
-   - Copies the WAR to Tomcat as `ROOT.war` and restarts Tomcat.
-   - Waits until the site answers.
+### 5.2 Add the SSH key to Jenkins
 
-The first run can take **5 to 10 minutes** (Maven downloads many files).
+**Manage Jenkins → Credentials → System → Global credentials → Add Credentials**
+
+| Field | Value |
+|-------|-------|
+| Kind | SSH Username with private key |
+| ID | `jenkins-agent-ssh` |
+| Username | `jenkins` |
+| Private Key | **Enter directly**, paste the full output of `cat ~/.ssh/jenkins_agent` |
+
+> Paste the **private** key: 7 lines, from `-----BEGIN OPENSSH PRIVATE KEY-----`
+> to `-----END OPENSSH PRIVATE KEY-----`. Not the `.pub` file.
+
+### 5.3 Add the node
+
+**Manage Jenkins → Nodes → New Node** → name `vm-agent` → **Permanent Agent**
+
+| Field | Value |
+|-------|-------|
+| Number of executors | `2` |
+| Remote root directory | `/home/jenkins/agent` |
+| Labels | `docker ansible` |
+| Usage | Only build jobs with label expressions matching this node |
+| Launch method | Launch agents via SSH |
+| Host | `192.168.18.104` |
+| Credentials | `jenkins-agent-ssh` |
+| Host Key Verification Strategy | Non verifying Verification Strategy |
+
+### 5.4 Turn off builds on the controller
+
+**Manage Jenkins → Nodes → Built-In Node → Configure** → Number of executors: `0`.
+
+### 5.5 Check
+
+In **Manage Jenkins → Nodes**, `vm-agent` must be online (no red cross).
+The agent log must end with:
+
+```
+Agent successfully connected and online
+```
 
 ---
 
-## 7. Open the app
+## 6. Test the agent
 
-Open in your browser:
+**New Item** → `agent-test` → **Pipeline** → paste the script → **Build Now**.
 
+```groovy
+pipeline {
+    agent { label 'docker' }
+    stages {
+        stage('Check agent') {
+            steps {
+                sh 'hostname && java -version && ansible --version && docker ps'
+            }
+        }
+        stage('Maven in Docker') {
+            agent {
+                docker { image 'maven:3.9-eclipse-temurin-17'; reuseNode true }
+            }
+            steps {
+                sh 'mvn -v'
+            }
+        }
+    }
+}
 ```
-http://192.168.18.101:8080
-```
 
-The login page is at `/form-login`.
+The build must be green. The Console Output shows `vm-agent` and the versions of Java, Ansible and Maven.
 
 ---
 
-## 8. Update the app
-
-Push your new code to GitHub, then run again:
-
-```bash
-set -a; source .env; set +a
-ansible-playbook app.yml
-```
-
-Ansible pulls the new code, builds it again and restarts Tomcat.
-If nothing changed, nothing is restarted.
-
----
-
-## 9. Useful commands
+## 7. Useful commands
 
 | Task | Command |
 |------|---------|
-| Check playbook syntax | `ansible-playbook app.yml --syntax-check` |
-| Dry run (no changes) | `ansible-playbook app.yml --check` |
-| Show more details | `ansible-playbook app.yml -v` (or `-vvv`) |
-| Run only on the database server | `ansible-playbook app.yml --limit db` |
-| Log in to a server | `ssh root@192.168.18.101` |
-| Tomcat logs | `ssh root@192.168.18.101 journalctl -u tomcat9 -f` |
-| MySQL status | `ssh root@192.168.18.102 systemctl status mysql` |
+| Jenkins logs | `ssh root@192.168.18.103 docker logs -f jenkins` |
+| Restart Jenkins | `ssh root@192.168.18.103 docker restart jenkins` |
+| First admin password | `ssh root@192.168.18.103 docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword` |
+| Log in to the agent as jenkins | `ssh -i ~/.ssh/jenkins_agent jenkins@192.168.18.104` |
+| Docker on the agent | `ssh root@192.168.18.104 docker ps -a` |
+| Run only the agent part | `ansible-playbook jenkins.yml --limit jenkins_agent` |
 
 ---
 
-## 10. Common problems
+## 8. Common problems
 
 | Error | Why | Fix |
 |-------|-----|-----|
-| `'proxmox_token' is undefined` or empty token | Secrets are not loaded. | Run `set -a; source .env; set +a`. |
-| `'db_password' is undefined` or `DB_PASSWORD is empty` | Secrets are not loaded. | Run `set -a; source .env; set +a`. |
-| `CERTIFICATE_VERIFY_FAILED` | Proxmox uses a self-signed certificate. | Keep `validate_certs: false` in `provision.yml`. |
-| `couldn't resolve module/action 'community.proxmox...'` | Collections are not installed. | `ansible-galaxy collection install -r requirements.yml` |
-| `Could not find or access 'travelagency.conf.j2'` | Template file is missing. | Make sure `travelagency.conf.j2` is in this folder. |
-| `UNREACHABLE` / `Permission denied (publickey)` | SSH key is wrong or the server is off. | Check the container is running and your key is `~/.ssh/id_ed25519`. |
-| `Public Key Retrieval is not allowed` | MySQL 8 connection setting. | Keep `allowPublicKeyRetrieval=true` in `travelagency.conf.j2`. |
-| `Wait until the site answers` fails | Tomcat could not start the app. | Look at `journalctl -u tomcat9` on vm-app. |
-| `Non-blocking file handles detected` | Terminal issue (some IDE terminals). | Add `</dev/null` at the end of the command. |
+| `gnupg ... do not seem to be installed` | The minimal LXC template has no `gnupg`, so the Ansible PPA cannot be added. | Ansible on the agent is installed with pip. No PPA needed. |
+| `keyserver receive failed` | The Ubuntu keyserver did not answer. | Same fix: install `ansible-core` with pip. |
+| `PEM problem: it is of unknown type` | The key in Jenkins is pasted wrong, or it is the `.pub` key. | Paste the full private key again (section 5.2). |
+| `Server rejected the private key` | Wrong username or key. | Username must be `jenkins`. Test with `ssh -i ~/.ssh/jenkins_agent jenkins@192.168.18.104`. |
+| Docker does not start in a container | No `nesting` feature. | On Proxmox: `pct set 304 --features nesting=1`, then restart the container. |
+| `permission denied ... docker.sock` in a job | The `jenkins` user is not in the `docker` group yet. | Relaunch the agent in Jenkins (or restart the container). |
+| Job waits forever: `There are no nodes with the label` | Wrong label or the agent is offline. | Use `agent { label 'docker' }` and check the node is online. |
+
+---
+
+## 9. Next steps
+
+1. **Jenkinsfile**: add a pipeline to the repo: Checkout → Build → Test → Archive WAR → Deploy with `app.yml`.
+2. **Deploy secrets**: add `DB_PASSWORD` to Jenkins Credentials (Secret text).
+3. **GitHub webhook**: the servers have private IPs, so GitHub cannot reach Jenkins directly.
+   Use a tunnel (Cloudflare Tunnel, ngrok or smee.io) and add the webhook
+   `https://<tunnel>/github-webhook/` in GitHub (event: push).
