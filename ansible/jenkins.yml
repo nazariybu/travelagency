@@ -41,6 +41,18 @@
           - "{{ jenkins_port }}:8080"
         volumes:
           - jenkins_home:/var/jenkins_home   # all Jenkins data lives here
+          
+    - name: Run smee client (forwards GitHub webhooks to Jenkins)
+      community.docker.docker_container:
+        name: smee
+        image: node:20-alpine
+        state: started
+        restart_policy: unless-stopped
+        network_mode: host          # so localhost:8080 is Jenkins
+        command: >
+          npx --yes smee-client
+          --url {{ smee_url }}
+          --target http://localhost:{{ jenkins_port }}/github-webhook/
 
     - name: Wait until Jenkins answers
       ansible.builtin.uri:

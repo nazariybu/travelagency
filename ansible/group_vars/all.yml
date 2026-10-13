@@ -20,3 +20,4 @@ jenkins_image: jenkins/jenkins:lts-jdk17
 jenkins_port: 8080
 jenkins_agent_user: jenkins
 jenkins_agent_home: /home/jenkins
+smee_url: https://smee.io/a7ClmtoMJzqcfNMS
