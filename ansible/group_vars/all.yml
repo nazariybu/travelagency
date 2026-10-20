@@ -9,7 +9,7 @@ db_host: "{{ hostvars[groups['db'][0]].ansible_host }}"  # IP of the first db se
 
 # --- Application ---
 app_repo: https://github.com/nazariybu/travelagency
-app_version: main
+app_version: load-balancing-redis
 app_src_dir: /opt/travelagency
 java_home: /usr/lib/jvm/java-17-openjdk-amd64
 tomcat_webapps: /var/lib/tomcat9/webapps
