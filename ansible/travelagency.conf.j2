@@ -1,8 +1,8 @@
 # Managed by Ansible. Database and Redis settings for the TravelAgency app.
- [Service]
- Environment="DB_TRAVELAGENCY_URL=jdbc:mysql://{{ db_host }}:3306/{{ db_name }}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8"
- Environment="DB_TRAVELAGENCY_USER={{ db_user }}"
- Environment="DB_TRAVELAGENCY_PASSWORD={{ db_password }}"
+[Service]
+Environment="DB_TRAVELAGENCY_URL=jdbc:mysql://{{ db_host }}:3306/{{ db_name }}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8"
+Environment="DB_TRAVELAGENCY_USER={{ db_user }}"
+Environment="DB_TRAVELAGENCY_PASSWORD={{ db_password }}"
 Environment="REDIS_TRAVELAGENCY_HOST={{ redis_host }}"
 Environment="REDIS_TRAVELAGENCY_PORT={{ redis_port }}"
 Environment="REDIS_TRAVELAGENCY_PASSWORD={{ redis_password }}"
