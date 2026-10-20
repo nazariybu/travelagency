@@ -73,9 +73,7 @@ deploys to both nodes.
 
 ---
 
-
-
-## 8. Tool versions
+## 6. Tool versions
 
 | Tool | Version |
 |------|---------|
@@ -87,7 +85,7 @@ deploys to both nodes.
 
 ---
 
-## 8. How to check
+## 7. How to check
 
 1. `curl -I http://192.168.18.106/` returns `200` or `302`, not the nginx welcome page.
 2. `tail -f /var/log/tomcat9/localhost_access_log.*.txt` on both nodes shows which node answers.
@@ -98,7 +96,7 @@ deploys to both nodes.
 
 ---
 
-## 9. Status
+## 8. Status
 
 | Step | Status |
 |------|--------|
