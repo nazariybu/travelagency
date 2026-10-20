@@ -24,3 +24,8 @@ jenkins_port: 8080
 jenkins_agent_user: jenkins
 jenkins_agent_home: /home/jenkins
 smee_url: https://smee.io/a7ClmtoMJzqcfNMS
+
+# --- Redis (shared HTTP sessions) ---
+redis_host: "{{ hostvars[groups['redis'][0]].ansible_host }}"
+redis_port: 6379
+redis_password: "{{ lookup('ansible.builtin.env', 'REDIS_PASSWORD') }}"  # secret: comes from .env

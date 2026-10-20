@@ -28,7 +28,7 @@ public class Security implements UserDetails {
     private String email;
     private List<GrantedAuthority> authorities;
     private String password;
-    private Set<Booking> mybookings;
+    private transient Set<Booking> mybookings;
 
     public Security(User user) {
         this.userId = user.getUserId();

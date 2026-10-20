@@ -227,6 +227,18 @@
             <artifactId>flyway-mysql</artifactId>
             <version>9.22.3</version>
         </dependency>
+        <!-- Shared HTTP sessions in Redis: any app node can read any session -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+            <version>2.5.2</version>
+        </dependency>
+        <!-- Redis client used by Spring Data Redis -->
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+            <version>6.1.4.RELEASE</version>
+        </dependency>        
         <!-- ... -->
     </dependencies>
 

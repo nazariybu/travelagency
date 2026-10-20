@@ -1,0 +1,46 @@
+- name: Set up Redis for shared HTTP sessions
+  hosts: redis
+  become: true
+
+  tasks:
+    - name: Stop if the Redis password is not set
+      ansible.builtin.assert:
+        that: redis_password | length > 0
+        fail_msg: "REDIS_PASSWORD is empty. Run:  set -a; source .env; set +a"
+        quiet: true
+
+    - name: Install Redis
+      ansible.builtin.apt:
+        name: redis-server
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # By default Redis listens only on localhost. App nodes need the LAN address.
+    - name: Listen on localhost and on the local network
+      ansible.builtin.lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^bind '
+        line: "bind 127.0.0.1 {{ ansible_host }}"
+      notify: Restart Redis
+
+    # Without a password anyone in the network can read all sessions.
+    - name: Ask every client for a password
+      ansible.builtin.lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^#? *requirepass '
+        line: "requirepass {{ redis_password }}"
+      no_log: true   # do not print the password in the Ansible output
+      notify: Restart Redis
+
+    - name: Make sure Redis is running and starts on boot
+      ansible.builtin.service:
+        name: redis-server
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Restart Redis
+      ansible.builtin.service:
+        name: redis-server
+        state: restarted
