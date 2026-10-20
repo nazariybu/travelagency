@@ -1,0 +1,23 @@
+# Managed by Ansible. Do not edit by hand.
+upstream travelagency {
+    # Sessions live in Tomcat memory, so one user must always hit the same node.
+    ip_hash;
+{% for host in groups['app'] %}
+    server {{ hostvars[host].ansible_host }}:{{ app_port }} max_fails=3 fail_timeout=10s;
+{% endfor %}
+}
+
+server {
+    listen {{ lb_port }} default_server;
+
+    location / {
+        proxy_pass http://travelagency;
+        # Pass the real client info to Tomcat.
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Try the next node if one is down.
+        proxy_next_upstream error timeout http_502 http_503;
+    }
+}
