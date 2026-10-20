@@ -23,7 +23,8 @@ pipeline {
         }
 
         stage('Deploy') {
-            when { branch 'load-balancing-redis' }       // deploy only from this branch            environment { DB_PASSWORD = credentials('db-password') }
+            when { branch 'load-balancing-redis' }       // deploy only from this branch            
+            environment { DB_PASSWORD = credentials('db-password') }
             steps {
                 dir('ansible') {
                     sh 'ansible-playbook app.yml -e war_file=$WORKSPACE/target/TravelAgency.war'
