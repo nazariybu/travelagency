@@ -17,3 +17,10 @@ tomcat_webapps: /var/lib/tomcat9/webapps
 # --- Load balancer ---
 app_port: 8080   # Tomcat port on every app node
 lb_port: 80      # nginx listens here
+
+# --- Jenkins ---
+jenkins_image: jenkins/jenkins:lts-jdk17
+jenkins_port: 8080
+jenkins_agent_user: jenkins
+jenkins_agent_home: /home/jenkins
+smee_url: https://smee.io/a7ClmtoMJzqcfNMS

@@ -8,6 +8,8 @@
       - { vmid: 302, name: vm-db,      ip: 192.168.18.102 }
       - { vmid: 305, name: vm-app2,    ip: 192.168.18.105 }
       - { vmid: 306, name: vm-lb,      ip: 192.168.18.106, memory: 512 }
+      - { vmid: 303, name: vm-jenkins, ip: 192.168.18.103, cores: 1, memory: 2048, disk: 16, features: [nesting=1] }
+      - { vmid: 304, name: vm-agent,   ip: 192.168.18.104, cores: 4, memory: 4096, disk: 32, features: [nesting=1] }      
   tasks:
     - name: Create container
       community.proxmox.proxmox:

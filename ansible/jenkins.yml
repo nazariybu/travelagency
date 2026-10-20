@@ -1,0 +1,133 @@
+---
+# Run:  ansible-playbook jenkins.yml
+
+# ============================================================
+# Play 1: Docker on both Jenkins containers
+# ============================================================
+- name: Install Docker
+  hosts: jenkins:jenkins_agent
+  become: true
+
+  tasks:
+    - name: Install Docker and the Python library that Ansible needs
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - python3-requests
+        state: present
+        update_cache: true
+
+    - name: Make sure Docker is running and starts on boot
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+# ============================================================
+# Play 2: Jenkins controller (runs in Docker)
+# ============================================================
+- name: Set up Jenkins controller
+  hosts: jenkins
+  become: true
+
+  tasks:
+    - name: Run Jenkins
+      community.docker.docker_container:
+        name: jenkins
+        image: "{{ jenkins_image }}"
+        state: started
+        restart_policy: unless-stopped
+        published_ports:
+          - "{{ jenkins_port }}:8080"
+        volumes:
+          - jenkins_home:/var/jenkins_home   # all Jenkins data lives here
+
+    - name: Run smee client (forwards GitHub webhooks to Jenkins)
+      community.docker.docker_container:
+        name: smee
+        image: node:20-alpine
+        state: started
+        restart_policy: unless-stopped
+        network_mode: host          # so localhost:8080 is Jenkins
+        command: >
+          npx --yes smee-client@2
+          --url {{ smee_url }}
+          --target http://localhost:{{ jenkins_port }}/github-webhook/
+
+    - name: Wait until Jenkins answers
+      ansible.builtin.uri:
+        url: "http://localhost:{{ jenkins_port }}/login"
+        status_code: 200
+      register: jenkins_site
+      until: jenkins_site.status == 200
+      retries: 30
+      delay: 5
+
+    - name: Read the first admin password
+      ansible.builtin.command: docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+      register: admin_pass
+      changed_when: false
+      failed_when: false
+
+    - name: Show the first admin password
+      ansible.builtin.debug:
+        msg: "Open http://{{ ansible_host }}:{{ jenkins_port }}  password: {{ admin_pass.stdout | default('already set up') }}"
+
+# ============================================================
+# Play 3: Jenkins agent (Java + Docker + Ansible)
+# ============================================================
+- name: Set up Jenkins agent
+  hosts: jenkins_agent
+  become: true
+
+  tasks:
+    - name: Install Java 17 and Git
+      ansible.builtin.apt:
+        name:
+          - openjdk-17-jre-headless   # Jenkins agent needs Java
+          - git
+          - python3-pip
+        state: present
+        update_cache: true
+
+    - name: Install Ansible and proxmoxer with pip (apt versions are too old)
+      ansible.builtin.pip:
+        name:
+          - "ansible-core>=2.15,<2.18"
+          - "proxmoxer>=2.3"
+
+    - name: Create the jenkins user and add it to the docker group
+      ansible.builtin.user:
+        name: "{{ jenkins_agent_user }}"
+        home: "{{ jenkins_agent_home }}"
+        shell: /bin/bash
+        groups: docker
+        append: true
+        generate_ssh_key: true          # key to deploy to vm-app / vm-db
+        ssh_key_type: ed25519
+        ssh_key_file: .ssh/id_ed25519
+      register: agent_user
+
+    - name: Let the Jenkins controller log in over SSH
+      ansible.posix.authorized_key:
+        user: "{{ jenkins_agent_user }}"
+        key: "{{ lookup('file', '~/.ssh/jenkins_agent.pub') }}"
+
+    - name: Install Ansible collections for the jenkins user
+      ansible.builtin.command: ansible-galaxy collection install community.mysql community.proxmox
+      become_user: "{{ jenkins_agent_user }}"
+      args:
+        creates: "{{ jenkins_agent_home }}/.ansible/collections/ansible_collections/community/mysql"
+
+# ============================================================
+# Play 4: let the agent deploy to the app and db servers
+# ============================================================
+- name: Allow the agent to SSH to app and db
+  hosts: app:db
+  become: true
+
+  tasks:
+    - name: Add the agent public key to root
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ hostvars[groups['jenkins_agent'][0]].agent_user.ssh_public_key }}"
