@@ -1,7 +1,7 @@
 # Managed by Ansible. Do not edit by hand.
 upstream travelagency {
-    # Sessions live in Tomcat memory, so one user must always hit the same node.
-    ip_hash;
+    # Sessions are in Redis, so any node can serve any user (round-robin).
+
 {% for host in groups['app'] %}
     server {{ hostvars[host].ansible_host }}:{{ app_port }} max_fails=3 fail_timeout=10s;
 {% endfor %}
