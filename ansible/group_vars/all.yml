@@ -36,3 +36,7 @@ prometheus_retention: 15d                # how long Prometheus keeps metrics
 grafana_admin_password: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_PASSWORD') }}"  # secret: comes from .env
 jmx_exporter_version: 1.0.1
 jmx_exporter_port: 9404                  # Tomcat JVM metrics on every app node
+proxmox_host: 192.168.18.200             # Proxmox API for pve-exporter (CPU of every LXC)
+pve_exporter_user: monitoring@pve        # read-only user (role PVEAuditor)
+pve_exporter_token_name: prometheus
+pve_exporter_token: "{{ lookup('ansible.builtin.env', 'PVE_EXPORTER_TOKEN') }}"  # secret: comes from .env

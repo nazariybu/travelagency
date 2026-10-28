@@ -56,6 +56,7 @@ flowchart LR
 | Grafana data source and dashboard by **provisioning** | Rebuilding `vm-monitor` gives the same Grafana; the dashboard is in Git. |
 | Secrets (`GRAFANA_ADMIN_PASSWORD`, `REDIS_PASSWORD`) only in `.env` | Same as the other playbooks; on the server `.env` is `0600`, Ansible uses `no_log`. |
 | Images pinned to exact versions | A `docker compose pull` never upgrades by surprise. |
+| CPU from the **Proxmox API** (pve-exporter), not node_exporter | Inside LXC node_exporter reads `/proc/stat` through lxcfs and shows far too high CPU. Proxmox counts the real CPU of every container. A recording rule `lxc:cpu_used:percent` names it like the host (`vm-app`). Read-only user `monitoring@pve` with role `PVEAuditor`. |
 | Alert rules without Alertmanager (for now) | Rules are visible in Prometheus; sending to Telegram is the next step. |
 
 ---
@@ -67,7 +68,7 @@ flowchart LR
 | `TargetDown` | an exporter does not answer (`up == 0`) | 1m |
 | `SiteDown` | Blackbox check failed | 1m |
 | `SiteSlow` | response time > 2 s | 5m |
-| `HighCpu` | CPU > 80% | 5m |
+| `HighCpu` | CPU > 80% of the cores of the container (from Proxmox) | 5m |
 | `LowMemory` | free RAM < 10% | 5m |
 | `DiskAlmostFull` | disk `/` > 85% | 10m |
 | `JvmHeapHigh` | heap > 90% of max | 5m |
@@ -103,12 +104,21 @@ requests on both nodes (round-robin), JVM heap, server resources, MySQL and Redi
 
 ![Grafana: TravelAgency overview](images/grafana-dashboard.png)
 
+Failover test: `tomcat9` stopped on `vm-app2`. **App nodes up** = 1, **Targets down** = 1,
+the alerts fire, and the site through the load balancer is still **UP**.
+
+![Grafana: one app node down](images/grafana-node-down.png)
+
+The same screenshots show a problem: **CPU used** from node_exporter stays at 50–90% on all
+containers, and `HighCpu` fires everywhere. See section 7.
+
 ---
 
 ## 7. Known limits
 
-- LXC containers share the Proxmox kernel. CPU and RAM come through lxcfs and show the
-  container limits, but some values (load average, disk I/O) are for the whole host.
+- LXC containers share the Proxmox kernel. node_exporter CPU inside LXC was 50–90% on idle
+  containers (lxcfs), so CPU is taken from Proxmox. RAM and disk from node_exporter are correct;
+  load average and disk I/O are for the whole host.
 - No Alertmanager yet: alerts are only visible in the Prometheus UI.
 - No logs yet (Loki is the next step), no container metrics (cAdvisor): the app runs in Tomcat, not in Docker.
 - Prometheus and Grafana have no TLS; Prometheus has no login. This is fine only inside the local network.
@@ -127,4 +137,5 @@ requests on both nodes (round-robin), JVM heap, server resources, MySQL and Redi
 | Prometheus + Grafana + Blackbox + redis_exporter | ✅ Done |
 | All targets UP | ✅ Done |
 | Dashboard with data | ✅ Done |
-| Alert test (stop one node) | ⬜ |
+| Alert test (stop one node) | ✅ Done |
+| CPU from Proxmox (pve-exporter) instead of node_exporter | ⬜ |

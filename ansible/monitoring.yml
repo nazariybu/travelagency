@@ -13,12 +13,13 @@
   gather_facts: false
 
   tasks:
-    - name: Stop if the Grafana or Redis password is not set
+    - name: Stop if a secret is not set
       ansible.builtin.assert:
         that:
           - grafana_admin_password | length > 0
           - redis_password | length > 0
-        fail_msg: "GRAFANA_ADMIN_PASSWORD or REDIS_PASSWORD is empty. Run:  set -a; source .env; set +a"
+          - pve_exporter_token | length > 0
+        fail_msg: "GRAFANA_ADMIN_PASSWORD, REDIS_PASSWORD or PVE_EXPORTER_TOKEN is empty. Run:  set -a; source .env; set +a"
         quiet: true
 
 # ============================================================
@@ -200,6 +201,9 @@
           REDIS_ADDR=redis://{{ redis_host }}:{{ redis_port }}
           REDIS_PASSWORD={{ redis_password }}
           PROMETHEUS_RETENTION={{ prometheus_retention }}
+          PVE_USER={{ pve_exporter_user }}
+          PVE_TOKEN_NAME={{ pve_exporter_token_name }}
+          PVE_EXPORTER_TOKEN={{ pve_exporter_token }}
       no_log: true   # do not print the passwords in the output
 
     - name: Start the stack

@@ -14,6 +14,7 @@ Everything is installed by one playbook: `ansible/monitoring.yml`.
 | JVM heap, GC, threads, Tomcat requests and errors | JMX exporter (`-javaagent` in Tomcat) | `vm-app`, `vm-app2` | 9404 |
 | MySQL connections, queries, slow queries | `mysqld_exporter` (Ubuntu package) | `vm-db` | 9104 |
 | Redis memory, clients, session keys | `redis_exporter` | `vm-monitor` (Docker) | 9121 |
+| Real CPU of every LXC (node_exporter CPU is wrong in LXC) | `prometheus-pve-exporter` (Proxmox API) | `vm-monitor` (Docker) | 9221 |
 | The site from outside: up or down, response time | Blackbox exporter | `vm-monitor` (Docker) | 9115 |
 
 ## How it works
@@ -54,9 +55,9 @@ flowchart LR
 | `ansible/monitoring.yml` | Installs all exporters and starts the monitoring stack |
 | `ansible/prometheus.yml.j2` | Prometheus config; targets come from the inventory |
 | `ansible/inventory.ini`, `ansible/provision.yml` | New host `vm-monitor` (CT 309, nesting for Docker) |
-| `ansible/group_vars/all.yml` | Monitoring settings, `GRAFANA_ADMIN_PASSWORD` from env |
-| `monitoring/docker-compose.yml` | Prometheus, Grafana, Blackbox, redis_exporter |
-| `monitoring/prometheus/alerts.yml` | Alert rules |
+| `ansible/group_vars/all.yml` | Monitoring settings, `GRAFANA_ADMIN_PASSWORD` and `PVE_EXPORTER_TOKEN` from env |
+| `monitoring/docker-compose.yml` | Prometheus, Grafana, Blackbox, redis_exporter, pve-exporter |
+| `monitoring/prometheus/alerts.yml` | Alert rules and the `lxc:cpu_used:percent` recording rule |
 | `monitoring/blackbox/blackbox.yml` | HTTP check module |
 | `monitoring/jmx/tomcat.yml` | JMX exporter rules for Tomcat |
 | `monitoring/grafana/provisioning/` | Data source and dashboard provider |
@@ -64,9 +65,17 @@ flowchart LR
 
 ## Run
 
+Once, on the **Proxmox host**: a read-only user and token for pve-exporter.
+
+```bash
+pveum user add monitoring@pve --comment "Prometheus read-only"
+pveum acl modify / --users monitoring@pve --roles PVEAuditor
+pveum user token add monitoring@pve prometheus --privsep 0   # copy the "value"
+```
+
 ```bash
 cd ansible
-# add GRAFANA_ADMIN_PASSWORD=... to .env
+# add GRAFANA_ADMIN_PASSWORD=... and PVE_EXPORTER_TOKEN=<value> to .env
 set -a; source .env; set +a
 ansible-playbook provision.yml     # creates vm-monitor (existing containers are not changed)
 ansible-playbook monitoring.yml
@@ -102,6 +111,7 @@ curl -s http://192.168.18.106:9100/metrics | grep -c '^node_'                 # 
 | Grafana | `grafana/grafana:13.2.5` |
 | Blackbox exporter | `prom/blackbox-exporter:v0.29.1` |
 | redis_exporter | `oliver006/redis_exporter:v1.95.0` |
+| Proxmox VE exporter | `prompve/prometheus-pve-exporter:3.10.1` |
 | JMX exporter (Java agent) | 1.0.1 |
 | node_exporter | 1.3.1 (Ubuntu 22.04 package) |
 | mysqld_exporter | 0.13.0 (Ubuntu 22.04 package) |

@@ -1,4 +1,4 @@
-# Monitoring stack on vm-monitor: Prometheus + Grafana + Blackbox + Redis exporter
+# Monitoring stack on vm-monitor: Prometheus + Grafana + Blackbox + Redis and Proxmox exporters
 # Installed by:  ansible-playbook monitoring.yml   (copies this folder to /opt/monitoring)
 # By hand:       docker compose up -d   (needs prometheus/prometheus.yml and .env, Ansible makes both)
 # UI:            Grafana http://<vm-monitor>:3000   Prometheus http://<vm-monitor>:9090
@@ -54,6 +54,18 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     expose:
       - "9121"
+    restart: unless-stopped
+
+  # CPU of every LXC as Proxmox sees it. node_exporter inside LXC shows wrong CPU (lxcfs)
+  pve-exporter:
+    image: prompve/prometheus-pve-exporter:3.10.1
+    environment:
+      PVE_USER: ${PVE_USER:-monitoring@pve}
+      PVE_TOKEN_NAME: ${PVE_TOKEN_NAME:-prometheus}
+      PVE_TOKEN_VALUE: ${PVE_EXPORTER_TOKEN:?set PVE_EXPORTER_TOKEN in .env}
+      PVE_VERIFY_SSL: "false"     # Proxmox uses a self-signed certificate
+    expose:
+      - "9221"
     restart: unless-stopped
 
 volumes:

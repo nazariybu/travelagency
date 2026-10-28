@@ -737,7 +737,7 @@
     },
     {
       "type": "timeseries",
-      "title": "CPU used",
+      "title": "CPU used (Proxmox)",
       "id": 16,
       "datasource": {
         "type": "prometheus",
@@ -779,10 +779,20 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "expr": "lxc:cpu_used:percent",
           "legendFormat": "{{instance}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * pve_cpu_usage_ratio{id=~\"node/.*\"}",
+          "legendFormat": "Proxmox host"
         }
-      ]
+      ],
+      "description": "From the Proxmox API (pve-exporter): % of the cores given to each container. node_exporter CPU inside LXC is wrong because of lxcfs"
     },
     {
       "type": "timeseries",

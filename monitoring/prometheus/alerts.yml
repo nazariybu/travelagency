@@ -1,5 +1,16 @@
 # Alert rules. Without Alertmanager they are visible in Prometheus -> Alerts.
 groups:
+  # node_exporter inside LXC reads /proc/stat through lxcfs and shows too high CPU.
+  # Proxmox knows the real CPU of every container: take it and name it like the host.
+  - name: proxmox
+    rules:
+      - record: lxc:cpu_used:percent
+        expr: |
+          label_replace(
+            100 * pve_cpu_usage_ratio * on (id) group_left (name) pve_guest_info{type="lxc"},
+            "instance", "$1", "name", "(.*)"
+          )
+
   - name: travelagency
     rules:
       - alert: TargetDown
@@ -24,7 +35,7 @@ groups:
           summary: "{{ $labels.url }} answers in {{ $value | humanizeDuration }}"
 
       - alert: HighCpu
-        expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 80
+        expr: lxc:cpu_used:percent > 80
         for: 5m
         labels: { severity: warning }
         annotations:

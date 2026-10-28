@@ -42,6 +42,17 @@ scrape_configs:
       - targets: ["redis-exporter:9121"]
         labels: { instance: "{{ groups['redis'][0] }}" }
 
+  # CPU, RAM, disk of every LXC from the Proxmox API (pve-exporter in the same compose)
+  - job_name: pve
+    metrics_path: /pve
+    params:
+      target: ["{{ proxmox_host }}"]
+      cluster: ["1"]
+      node: ["1"]
+    static_configs:
+      - targets: ["pve-exporter:9221"]
+        labels: { instance: proxmox }
+
   # The site from the outside: through the load balancer and on each app node
   - job_name: blackbox
     metrics_path: /probe
