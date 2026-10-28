@@ -27,7 +27,7 @@ pipeline {
         }
         
         stage('Publish WAR to GitHub Packages') {
-            when { branch 'load-balancing-redis' }
+            when { branch 'github-packages' }
             agent {
                 docker {
                     image 'maven:3.9-eclipse-temurin-17'
