@@ -138,4 +138,5 @@ containers, and `HighCpu` fires everywhere. See section 7.
 | All targets UP | ✅ Done |
 | Dashboard with data | ✅ Done |
 | Alert test (stop one node) | ✅ Done |
+| Idempotency (second run, no Tomcat restart) | ✅ Done |
 | CPU from Proxmox (pve-exporter) instead of node_exporter | ⬜ |
