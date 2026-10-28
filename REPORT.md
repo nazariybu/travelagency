@@ -101,5 +101,5 @@ flowchart LR
 | Classic token with `write:packages` | ✅ Done |
 | `distributionManagement` + `ci/maven-settings.xml` | ✅ Done |
 | Manual `mvn deploy` to GitHub Packages | ✅ Done |
-| Jenkins credential `github-packages` | ⏳ To check |
-| Stage `Publish WAR to GitHub Packages` green in Jenkins | ⏳ To check |
+| Jenkins credential `github-packages` | ✅ Done |
+| Stage `Publish WAR to GitHub Packages` green in Jenkins | ✅ Done |
