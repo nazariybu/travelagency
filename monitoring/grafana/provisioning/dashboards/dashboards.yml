@@ -1,0 +1,9 @@
+# Load every JSON dashboard from /var/lib/grafana/dashboards into the "TravelAgency" folder
+apiVersion: 1
+providers:
+  - name: travelagency
+    folder: TravelAgency
+    type: file
+    allowUiUpdates: true          # you can edit in the UI, but save changes back to the JSON file
+    options:
+      path: /var/lib/grafana/dashboards

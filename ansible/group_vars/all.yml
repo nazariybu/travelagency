@@ -29,3 +29,10 @@ smee_url: https://smee.io/a7ClmtoMJzqcfNMS
 redis_host: "{{ hostvars[groups['redis'][0]].ansible_host }}"
 redis_port: 6379
 redis_password: "{{ lookup('ansible.builtin.env', 'REDIS_PASSWORD') }}"  # secret: comes from .env
+
+# --- Monitoring (monitoring.yml) ---
+monitoring_dir: /opt/monitoring          # compose project on vm-monitor
+prometheus_retention: 15d                # how long Prometheus keeps metrics
+grafana_admin_password: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_PASSWORD') }}"  # secret: comes from .env
+jmx_exporter_version: 1.0.1
+jmx_exporter_port: 9404                  # Tomcat JVM metrics on every app node

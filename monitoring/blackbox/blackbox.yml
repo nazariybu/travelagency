@@ -1,0 +1,10 @@
+# Blackbox exporter modules. Prometheus says which module and URL to probe.
+modules:
+  # The page answers 2xx (after redirects). /form-login is the public login page.
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      valid_status_codes: []   # empty = any 2xx

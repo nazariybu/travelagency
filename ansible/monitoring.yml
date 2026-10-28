@@ -1,0 +1,236 @@
+---
+# Run:  set -a; source .env; set +a     (load secrets, once per terminal)
+#       ansible-playbook monitoring.yml
+# Then: Grafana http://192.168.18.108:3000  (admin / GRAFANA_ADMIN_PASSWORD)
+
+
+# ============================================================
+# Play 0: check that the secrets from .env are loaded
+# ============================================================
+- name: Check settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Stop if the Grafana or Redis password is not set
+      ansible.builtin.assert:
+        that:
+          - grafana_admin_password | length > 0
+          - redis_password | length > 0
+        fail_msg: "GRAFANA_ADMIN_PASSWORD or REDIS_PASSWORD is empty. Run:  set -a; source .env; set +a"
+        quiet: true
+
+# ============================================================
+# Play 1: node_exporter (CPU, RAM, disk, network) on every server
+# ============================================================
+- name: Install node_exporter
+  hosts: all:!localhost
+  become: true
+
+  tasks:
+    - name: Install node_exporter from Ubuntu packages
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Make sure node_exporter is running and starts on boot
+      ansible.builtin.service:
+        name: prometheus-node-exporter
+        state: started
+        enabled: true
+
+# ============================================================
+# Play 2: JVM and Tomcat metrics on the app nodes
+# ============================================================
+- name: Add the JMX exporter to Tomcat
+  hosts: app
+  become: true
+  serial: 1   # restart one node at a time, the load balancer keeps the site up
+
+  tasks:
+    - name: Create the folder for the JMX exporter
+      ansible.builtin.file:
+        path: /opt/jmx_exporter
+        state: directory
+        mode: "0755"
+
+    - name: Download the JMX exporter Java agent
+      ansible.builtin.get_url:
+        url: "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/{{ jmx_exporter_version }}/jmx_prometheus_javaagent-{{ jmx_exporter_version }}.jar"
+        dest: /opt/jmx_exporter/jmx_prometheus_javaagent.jar
+        mode: "0644"
+      notify: Restart Tomcat
+
+    - name: Copy the Tomcat rules
+      ansible.builtin.copy:
+        src: ../monitoring/jmx/tomcat.yml
+        dest: /opt/jmx_exporter/tomcat.yml
+        mode: "0644"
+      notify: Restart Tomcat
+
+    # A separate file next to travelagency.conf, so app.yml does not overwrite it
+    - name: Start Tomcat with the Java agent
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tomcat9.service.d/monitoring.conf
+        mode: "0644"
+        content: |
+          # Managed by Ansible (monitoring.yml). JVM and Tomcat metrics on :{{ jmx_exporter_port }}/metrics
+          [Service]
+          Environment="CATALINA_OPTS=-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar={{ jmx_exporter_port }}:/opt/jmx_exporter/tomcat.yml"
+      notify: Restart Tomcat
+
+    - name: Restart Tomcat now if something changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait until the metrics answer
+      ansible.builtin.uri:
+        url: "http://localhost:{{ jmx_exporter_port }}/metrics"
+        status_code: 200
+      register: jmx
+      until: jmx.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Wait until the site answers again
+      ansible.builtin.uri:
+        url: "http://localhost:{{ app_port }}/form-login"
+        status_code: 200
+      register: site
+      until: site.status == 200
+      retries: 12
+      delay: 5
+
+  handlers:
+    - name: Restart Tomcat
+      ansible.builtin.systemd:
+        name: tomcat9
+        state: restarted
+        daemon_reload: true
+
+# ============================================================
+# Play 3: MySQL metrics
+# ============================================================
+- name: Install mysqld_exporter
+  hosts: db
+  become: true
+
+  tasks:
+    - name: Install mysqld_exporter from Ubuntu packages
+      ansible.builtin.apt:
+        name: prometheus-mysqld-exporter
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # auth_socket: MySQL trusts the Linux user "prometheus" on this host, no password needed
+    - name: Create a read-only MySQL user for the exporter
+      community.mysql.mysql_user:
+        name: prometheus
+        host: localhost
+        plugin: auth_socket
+        priv: "*.*:PROCESS,REPLICATION CLIENT,SELECT"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Tell the exporter how to connect
+      ansible.builtin.lineinfile:
+        path: /etc/default/prometheus-mysqld-exporter
+        regexp: '^DATA_SOURCE_NAME='
+        line: 'DATA_SOURCE_NAME="prometheus@unix(/run/mysqld/mysqld.sock)/"'
+      notify: Restart mysqld_exporter
+
+    - name: Make sure mysqld_exporter is running and starts on boot
+      ansible.builtin.service:
+        name: prometheus-mysqld-exporter
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Restart mysqld_exporter
+      ansible.builtin.service:
+        name: prometheus-mysqld-exporter
+        state: restarted
+
+# ============================================================
+# Play 4: Prometheus + Grafana on vm-monitor (Docker Compose)
+# ============================================================
+- name: Set up the monitoring server
+  hosts: monitoring
+  become: true
+
+  tasks:
+    - name: Install Docker and Docker Compose
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Make sure Docker is running and starts on boot
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Copy the compose project (configs and dashboards)
+      ansible.builtin.copy:
+        src: ../monitoring/
+        dest: "{{ monitoring_dir }}/"
+        mode: preserve
+      register: files
+
+    - name: Make the Prometheus config with targets from the inventory
+      ansible.builtin.template:
+        src: prometheus.yml.j2
+        dest: "{{ monitoring_dir }}/prometheus/prometheus.yml"
+        mode: "0644"
+      register: prom_config
+
+    - name: Write secrets for docker compose
+      ansible.builtin.copy:
+        dest: "{{ monitoring_dir }}/.env"
+        mode: "0600"
+        content: |
+          GRAFANA_ADMIN_PASSWORD={{ grafana_admin_password }}
+          REDIS_ADDR=redis://{{ redis_host }}:{{ redis_port }}
+          REDIS_PASSWORD={{ redis_password }}
+          PROMETHEUS_RETENTION={{ prometheus_retention }}
+      no_log: true   # do not print the passwords in the output
+
+    - name: Start the stack
+      ansible.builtin.command:
+        cmd: docker compose up -d --remove-orphans
+        chdir: "{{ monitoring_dir }}"
+      register: compose
+      changed_when: "'Started' in compose.stderr or 'Recreated' in compose.stderr or 'Created' in compose.stderr"
+
+    # Prometheus reads its config only on start or reload
+    - name: Reload Prometheus if its config or rules changed
+      ansible.builtin.uri:
+        url: http://localhost:9090/-/reload
+        method: POST
+      register: reload
+      until: reload.status == 200
+      retries: 10
+      delay: 3
+      when: files.changed or prom_config.changed
+
+    - name: Wait until Grafana answers
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/health
+        status_code: 200
+      register: grafana
+      until: grafana.status == 200
+      retries: 20
+      delay: 5
+
+    - name: Show where to open it
+      ansible.builtin.debug:
+        msg:
+          - "Grafana:    http://{{ ansible_host }}:3000  (admin / GRAFANA_ADMIN_PASSWORD)"
+          - "Prometheus: http://{{ ansible_host }}:9090/targets  (all targets must be UP)"

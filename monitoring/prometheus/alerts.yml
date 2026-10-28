@@ -1,0 +1,73 @@
+# Alert rules. Without Alertmanager they are visible in Prometheus -> Alerts.
+groups:
+  - name: travelagency
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.instance }} does not answer"
+
+      - alert: SiteDown
+        expr: probe_success == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.url }} is down"
+
+      - alert: SiteSlow
+        expr: probe_duration_seconds > 2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.url }} answers in {{ $value | humanizeDuration }}"
+
+      - alert: HighCpu
+        expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 80
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "CPU on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}%"
+
+      - alert: LowMemory
+        expr: 100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Only {{ $value | printf \"%.0f\" }}% RAM is free on {{ $labels.instance }}"
+
+      - alert: DiskAlmostFull
+        expr: 100 * (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 85
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk / on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+
+      - alert: JvmHeapHigh
+        expr: 100 * jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} > 90
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Heap on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% used"
+
+      - alert: TomcatErrors
+        expr: rate(tomcat_errorcount_total[5m]) > 0.1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Tomcat on {{ $labels.instance }} returns 4xx/5xx ({{ $value | printf \"%.2f\" }}/s)"
+
+      - alert: MySqlDown
+        expr: mysql_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "mysqld_exporter cannot connect to MySQL on {{ $labels.instance }}"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Redis on {{ $labels.instance }} is down, users lose their sessions"

@@ -1,0 +1,64 @@
+# Managed by Ansible (monitoring.yml). Targets come from inventory.ini.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels: { instance: "{{ inventory_hostname }}" }
+
+  # CPU, RAM, disk, network of every server (node_exporter)
+  - job_name: node
+    static_configs:
+{% for host in groups['all'] %}
+      - targets: ["{{ hostvars[host].ansible_host }}:9100"]
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+
+  # JVM heap, GC, threads and Tomcat requests (JMX exporter inside Tomcat)
+  - job_name: tomcat
+    static_configs:
+{% for host in groups['app'] %}
+      - targets: ["{{ hostvars[host].ansible_host }}:{{ jmx_exporter_port }}"]
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+
+  # MySQL connections, queries, slow queries (mysqld_exporter)
+  - job_name: mysql
+    static_configs:
+{% for host in groups['db'] %}
+      - targets: ["{{ hostvars[host].ansible_host }}:9104"]
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+
+  # Redis memory, clients, keys (redis_exporter in the same compose)
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels: { instance: "{{ groups['redis'][0] }}" }
+
+  # The site from the outside: through the load balancer and on each app node
+  - job_name: blackbox
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://{{ hostvars[groups['lb'][0]].ansible_host }}:{{ lb_port }}/form-login"]
+        labels: { instance: "{{ groups['lb'][0] }}" }
+{% for host in groups['app'] %}
+      - targets: ["http://{{ hostvars[host].ansible_host }}:{{ app_port }}/form-login"]
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+    relabel_configs:
+      # Send the URL to blackbox as ?target=..., keep it as the "url" label
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: url
+      - target_label: __address__
+        replacement: blackbox:9115

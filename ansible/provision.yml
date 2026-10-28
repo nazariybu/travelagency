@@ -11,6 +11,7 @@
       - { vmid: 307, name: vm-redis,   ip: 192.168.18.107, memory: 512 }
       - { vmid: 303, name: vm-jenkins, ip: 192.168.18.103, cores: 1, memory: 2048, disk: 16, features: [nesting=1] }
       - { vmid: 304, name: vm-agent,   ip: 192.168.18.104, cores: 4, memory: 4096, disk: 32, features: [nesting=1] }      
+      - { vmid: 308, name: vm-monitor, ip: 192.168.18.108, cores: 2, memory: 2048, disk: 16, features: [nesting=1] }
   tasks:
     - name: Create container
       community.proxmox.proxmox:

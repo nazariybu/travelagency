@@ -1,0 +1,21 @@
+# JMX exporter rules for Tomcat 9. Installed to /opt/jmx_exporter/tomcat.yml on app nodes.
+# JVM metrics (heap, GC, threads) are exported always; these rules add Tomcat metrics.
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  # Requests, errors, bytes and time per connector, e.g. tomcat_requestcount_total{port="8080"}
+  - pattern: 'Catalina<type=GlobalRequestProcessor, name="(\w+-\w+)-(\d+)"><>(requestCount|errorCount|bytesReceived|bytesSent|processingTime):'
+    name: tomcat_$3_total
+    labels:
+      protocol: "$1"
+      port: "$2"
+    help: Tomcat global $3
+    type: COUNTER
+  # Worker threads: how many are busy out of maxThreads
+  - pattern: 'Catalina<type=ThreadPool, name="(\w+-\w+)-(\d+)"><>(currentThreadCount|currentThreadsBusy|maxThreads|connectionCount):'
+    name: tomcat_threadpool_$3
+    labels:
+      protocol: "$1"
+      port: "$2"
+    help: Tomcat thread pool $3
+    type: GAUGE
