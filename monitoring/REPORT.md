@@ -98,6 +98,11 @@ All 10 alert rules are loaded from `/etc/prometheus/alerts.yml`.
 
 ![Prometheus: alert rules](images/prometheus-alerts.png)
 
+Grafana dashboard **TravelAgency overview**: site UP, both nodes up, 0 targets down,
+requests on both nodes (round-robin), JVM heap, server resources, MySQL and Redis.
+
+![Grafana: TravelAgency overview](images/grafana-dashboard.png)
+
 ---
 
 ## 7. Known limits
@@ -121,5 +126,5 @@ All 10 alert rules are loaded from `/etc/prometheus/alerts.yml`.
 | mysqld_exporter on `vm-db` | ✅ Done |
 | Prometheus + Grafana + Blackbox + redis_exporter | ✅ Done |
 | All targets UP | ✅ Done |
-| Dashboard with data | ⬜ |
+| Dashboard with data | ✅ Done |
 | Alert test (stop one node) | ⬜ |
