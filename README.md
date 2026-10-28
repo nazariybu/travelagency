@@ -1,8 +1,11 @@
-# Travel Agency: Load Balancing + Redis Sessions
+# Travel Agency: Load Balancing + Redis Sessions + Docker
 
 ![nginx](https://img.shields.io/badge/nginx-load%20balancer-009639?logo=nginx&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-sessions-DC382D?logo=redis&logoColor=white)
 ![Ansible](https://img.shields.io/badge/Ansible-automation-EE0000?logo=ansible&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-container-2496ED?logo=docker&logoColor=white)
+![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D24939?logo=jenkins&logoColor=white)
+![Trivy](https://img.shields.io/badge/Trivy-image%20scan-1904DA?logo=aqua&logoColor=white)
 
 The Travel Agency web app (Java 17, Spring MVC 5, Hibernate, JSP) runs on
 **two app nodes** behind an **nginx load balancer**. HTTP sessions are stored
@@ -11,6 +14,11 @@ managed by **Flyway**.
 
 All servers are Proxmox LXC containers (Ubuntu 22.04), created and configured
 by Ansible. There are no manual steps on the servers.
+
+The app is also packed into a **Docker image** (Tomcat 9 + JRE 17, non-root user).
+`docker compose` runs the same stack on one machine: nginx → app → MySQL + Redis.
+Jenkins builds the image, scans it with **Trivy** and pushes it to
+**Docker Hub** (`nazariybu/travelagency`).
 
 ## Servers
 
@@ -48,6 +56,9 @@ flowchart LR
 | Load balancer | One app node is a single point of failure | nginx in front of two Tomcat nodes, with failover |
 | Shared sessions | Sessions live in Tomcat memory: the other node does not know the user | Spring Session stores sessions in Redis |
 | DB migrations | `hbm2ddl.auto: create` + `insert.sql` deleted all data on every start, and two nodes did it at the same time | Flyway runs each SQL file once; Hibernate only checks the schema (`validate`) |
+| Docker image | The app runs only on a VM prepared by Ansible | Multi-stage `Dockerfile`: Maven + JDK 17 build, Tomcat 9 + JRE 17 run, non-root user |
+| Local stack | Many VMs are needed to test the full setup | `docker-compose.yml`: nginx, app, MySQL, Redis on one host |
+| Image registry + scan | No versioned artifact except the WAR | Jenkins builds the image, scans it with Trivy, pushes it to Docker Hub |
 
 ### nginx load balancer
 
@@ -78,6 +89,54 @@ flowchart LR
   On the next start nothing runs again, so the data stays after a deploy.
 - To change the schema, add a new file `V3__<what>.sql`. Do not edit old files.
 
+### Docker image
+
+- **Stage 1** (`maven:3.9-eclipse-temurin-17`): builds `TravelAgency.war`.
+  JDK 17 is required: Lombok 1.18.20 fails on JDK 21.
+  `pom.xml` is copied first, so the dependency layer is cached.
+- **Stage 2** (`tomcat:9.0-jre17-temurin-jammy`): only the JRE and Tomcat, no Maven
+  and no sources. The WAR is deployed as `ROOT.war`, the same as on the VMs.
+- **Non-root**: user `app` with fixed UID/GID `10001` (`USER 10001`). It can write
+  only to `logs`, `temp`, `work`, `webapps`; `conf` and `bin` stay owned by root.
+- `.dockerignore` keeps `.git`, `target`, `ansible` and `.env` out of the build context.
+
+### docker compose + nginx reverse proxy
+
+```mermaid
+flowchart LR
+    U["Browser"] -->|":80"| N["nginx<br/>(container)"]
+    N -->|"app:8080"| A["app<br/>Tomcat 9, UID 10001"]
+    A -->|"db:3306"| DB[("db<br/>MySQL 8.0")]
+    A -->|"redis:6379"| R[("redis<br/>Redis 7")]
+```
+
+- Only nginx publishes a port (`${HTTP_PORT:-80}`). Tomcat, MySQL and Redis are
+  reachable only inside the compose network.
+- `nginx/nginx.conf`: `upstream` on `app:8080` (Docker DNS), `X-Forwarded-*`
+  headers, `server_tokens off`, health page `/nginx-health`.
+- `app` starts only after `db` and `redis` are healthy (`depends_on: condition: service_healthy`).
+- Secrets come from `.env` next to `docker-compose.yml` (see `.env.example`).
+  Compose stops with an error if `DB_PASSWORD`, `DB_ROOT_PASSWORD` or `REDIS_PASSWORD` is empty.
+- MySQL data is kept in the named volume `db-data`.
+
+### Jenkins pipeline
+
+| Stage | What it does |
+|---|---|
+| Build & Test | `mvn clean package` in `maven:3.9-eclipse-temurin-17` |
+| Archive | Saves `target/TravelAgency.war` |
+| Docker Build | `docker build -t nazariybu/travelagency:<build number> -t ...:latest .` |
+| Trivy Scan | `aquasec/trivy:0.57.1`, `HIGH,CRITICAL`, `--ignore-unfixed`; report saved as `trivy-report.txt` |
+| Push to Docker Hub | Only on `load-balancing-redis`; login with the `dockerhub-creds` credential (`--password-stdin`) |
+| Deploy | Only on `load-balancing-redis`; `ansible-playbook app.yml` with the built WAR |
+
+Trivy runs in **report-only** mode (`--exit-code 0`): old libraries in `pom.xml`
+(Spring 5.3.9, logback 1.2.3, mysql-connector 8.0.x, jetty 9.4) have known CVEs.
+To make it a quality gate, use `--severity CRITICAL --exit-code 1`.
+
+Jenkins needs a credential `dockerhub-creds` of type **Username with password**:
+the Docker Hub login and an **access token** (Read & Write), not the account password.
+
 ## Files
 
 | File | Purpose |
@@ -93,6 +152,12 @@ flowchart LR
 | `ansible/travelagency.conf.j2` | systemd drop-in with DB and Redis env vars for Tomcat |
 | `src/main/resources/application.properties` | App settings, read from env vars |
 | `src/main/resources/db/migration/` | Flyway SQL migrations |
+| `Dockerfile` | Multi-stage image: build on JDK 17, run on Tomcat 9 + JRE 17 as UID 10001 |
+| `.dockerignore` | Files that are not sent to the Docker build |
+| `docker-compose.yml` | Local stack: `nginx`, `app`, `db`, `redis` |
+| `nginx/nginx.conf` | nginx reverse proxy config for compose |
+| `.env.example` | Example of the secrets file for compose |
+| `Jenkinsfile` | CI/CD: build, archive, Docker build, Trivy, push, deploy |
 
 The app reads these env vars (set by `travelagency.conf.j2`):
 `DB_TRAVELAGENCY_URL`, `DB_TRAVELAGENCY_USER`, `DB_TRAVELAGENCY_PASSWORD`,
@@ -121,6 +186,50 @@ ansible-playbook lb.yml
 
 To add a third app node: add it to `[app]` in `inventory.ini` and to
 `provision.yml`, then run `provision.yml`, `app.yml` and `lb.yml` again.
+
+## Run with Docker
+
+Install Docker Engine and the Compose plugin (Ubuntu 22.04):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER   # then log out and in again
+```
+
+Start the stack:
+
+```bash
+cp .env.example .env            # put real passwords into .env
+docker compose up -d --build
+docker compose ps
+```
+
+Or run the image from Docker Hub without a local build
+(set `DOCKERHUB_USER=nazariybu` and `APP_TAG` in `.env`):
+
+```bash
+docker compose pull app
+docker compose up -d
+```
+
+Build and push the image by hand:
+
+```bash
+docker login -u nazariybu          # password = Docker Hub access token
+docker build -t nazariybu/travelagency:1.0.0 .
+docker tag nazariybu/travelagency:1.0.0 nazariybu/travelagency:latest
+docker push nazariybu/travelagency:1.0.0
+docker push nazariybu/travelagency:latest
+```
+
+Stop: `docker compose down` (add `-v` to delete the database volume).
 
 ## Check
 
@@ -155,6 +264,23 @@ mysql travelagency -e "SELECT version, description, success FROM flyway_schema_h
 
 Idempotency: a second run of `redis.yml`, `app.yml` and `lb.yml` must show `changed=0`.
 
+Docker stack:
+
+```bash
+docker compose ps                              # db and redis are (healthy), only nginx has 0.0.0.0:80
+curl -I http://localhost/form-login            # HTTP/1.1 200, Server: nginx
+curl http://localhost/nginx-health             # ok
+docker compose exec app id                     # uid=10001(app) gid=10001(app)
+docker compose exec redis sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning keys "spring:session*"'
+```
+
+Trivy scan of a local image:
+
+```bash
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.57.1 \
+  image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed nazariybu/travelagency:latest
+```
+
 ## Tool versions
 
 | Tool | Version |
@@ -167,3 +293,6 @@ Idempotency: a second run of `redis.yml`, `app.yml` and `lb.yml` must show `chan
 | Redis | 6 (Ubuntu 22.04 package) |
 | Flyway | 9.22.3 |
 | Spring Session Data Redis | 2.5.2 |
+| Docker base images | `maven:3.9-eclipse-temurin-17`, `tomcat:9.0-jre17-temurin-jammy` |
+| Compose images | `nginx:1.27-alpine`, `mysql:8.0`, `redis:7-alpine` |
+| Trivy | 0.57.1 |
