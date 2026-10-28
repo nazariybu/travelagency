@@ -26,6 +26,27 @@ pipeline {
             }
         }
         
+        stage('Publish WAR to GitHub Packages') {
+            when { branch 'load-balancing-redis' }
+            agent {
+                docker {
+                    image 'maven:3.9-eclipse-temurin-17'
+                    args  '-v /home/jenkins/.m2:/home/jenkins/.m2'
+                    reuseNode true
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'github-packages',
+                                                usernameVariable: 'GH_PKG_USER',
+                                                passwordVariable: 'GH_PKG_TOKEN')]) {
+                    sh '''
+                        MVN="mvn -B -s ci/maven-settings.xml -Dmaven.repo.local=/home/jenkins/.m2/repository"
+                        $MVN versions:set -DnewVersion=1.0.$BUILD_NUMBER -DgenerateBackupPoms=false
+                        $MVN deploy -DskipTests
+                    '''
+                }
+            }
+        }
         stage('Docker Build') {
             steps {
                 sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest .'
