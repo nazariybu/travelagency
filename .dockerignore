@@ -1,0 +1,9 @@
+.git
+target
+ansible
+images
+*.md
+.env
+docker-compose.yml
+nginx
+Jenkinsfile
