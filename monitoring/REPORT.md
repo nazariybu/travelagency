@@ -87,6 +87,17 @@ flowchart LR
 5. `systemctl start tomcat9`: the alerts go back to **inactive**.
 6. A second run of `monitoring.yml`: Tomcat is not restarted.
 
+### Screenshots
+
+All 16 targets are UP (`up` query): node_exporter on 8 servers, Tomcat on 2 nodes,
+MySQL, Redis, Blackbox for the load balancer and both nodes, Prometheus itself.
+
+![Prometheus: all targets UP](images/prometheus-targets-up.png)
+
+All 10 alert rules are loaded from `/etc/prometheus/alerts.yml`.
+
+![Prometheus: alert rules](images/prometheus-alerts.png)
+
 ---
 
 ## 7. Known limits
@@ -104,11 +115,11 @@ flowchart LR
 
 | Step | Status |
 |------|--------|
-| Container `vm-monitor` (CT 309) | ⬜ |
-| node_exporter on all servers | ⬜ |
-| JMX exporter in Tomcat on both nodes | ⬜ |
-| mysqld_exporter on `vm-db` | ⬜ |
-| Prometheus + Grafana + Blackbox + redis_exporter | ⬜ |
-| All targets UP | ⬜ |
+| Container `vm-monitor` (CT 309) | ✅ Done |
+| node_exporter on all servers | ✅ Done |
+| JMX exporter in Tomcat on both nodes | ✅ Done |
+| mysqld_exporter on `vm-db` | ✅ Done |
+| Prometheus + Grafana + Blackbox + redis_exporter | ✅ Done |
+| All targets UP | ✅ Done |
 | Dashboard with data | ⬜ |
 | Alert test (stop one node) | ⬜ |
