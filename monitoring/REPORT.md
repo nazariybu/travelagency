@@ -104,7 +104,7 @@ flowchart LR
 
 | Step | Status |
 |------|--------|
-| Container `vm-monitor` (CT 308) | ⬜ |
+| Container `vm-monitor` (CT 309) | ⬜ |
 | node_exporter on all servers | ⬜ |
 | JMX exporter in Tomcat on both nodes | ⬜ |
 | mysqld_exporter on `vm-db` | ⬜ |

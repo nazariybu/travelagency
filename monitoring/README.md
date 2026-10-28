@@ -45,7 +45,7 @@ flowchart LR
 
 | CT | Name | IP | Role |
 |---|---|---|---|
-| 308 | vm-monitor | `192.168.18.108` | Prometheus, Grafana, Blackbox, redis_exporter (Docker) |
+| 309 | vm-monitor | `192.168.18.108` | Prometheus, Grafana, Blackbox, redis_exporter (Docker) |
 
 ## Files
 
@@ -53,7 +53,7 @@ flowchart LR
 |---|---|
 | `ansible/monitoring.yml` | Installs all exporters and starts the monitoring stack |
 | `ansible/prometheus.yml.j2` | Prometheus config; targets come from the inventory |
-| `ansible/inventory.ini`, `ansible/provision.yml` | New host `vm-monitor` (CT 308, nesting for Docker) |
+| `ansible/inventory.ini`, `ansible/provision.yml` | New host `vm-monitor` (CT 309, nesting for Docker) |
 | `ansible/group_vars/all.yml` | Monitoring settings, `GRAFANA_ADMIN_PASSWORD` from env |
 | `monitoring/docker-compose.yml` | Prometheus, Grafana, Blackbox, redis_exporter |
 | `monitoring/prometheus/alerts.yml` | Alert rules |
