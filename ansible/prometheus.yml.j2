@@ -52,6 +52,16 @@ scrape_configs:
     static_configs:
       - targets: ["pve-exporter:9221"]
         labels: { instance: proxmox }
+    metric_relabel_configs:
+      # Proxmox returns every LXC/VM. Keep names only for servers from inventory.ini,
+      # so lxc:cpu_used:percent has no other containers (SonarQube, tests, ...)
+      - source_labels: [name]
+        regex: "{{ groups['all'] | join('|') }}"
+        target_label: __tmp_keep
+        replacement: "yes"
+      - source_labels: [__name__, __tmp_keep]
+        regex: "pve_guest_info;"
+        action: drop
 
   # The site from the outside: through the load balancer and on each app node
   - job_name: blackbox
