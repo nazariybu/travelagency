@@ -3,7 +3,6 @@
 ![nginx](https://img.shields.io/badge/nginx-load%20balancer-009639?logo=nginx&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-sessions-DC382D?logo=redis&logoColor=white)
 ![Ansible](https://img.shields.io/badge/Ansible-automation-EE0000?logo=ansible&logoColor=white)
-<<<<<<< HEAD
 ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-alerts-26A5E4?logo=telegram&logoColor=white)
 =======
