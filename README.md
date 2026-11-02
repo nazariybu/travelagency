@@ -4,6 +4,7 @@
 ![Grafana](https://img.shields.io/badge/Grafana-dashboards-F46800?logo=grafana&logoColor=white)
 ![Ansible](https://img.shields.io/badge/Ansible-automation-EE0000?logo=ansible&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
+![Telegram](https://img.shields.io/badge/Telegram-alerts-26A5E4?logo=telegram&logoColor=white)
 
 One new server, `vm-monitor`, collects metrics from every server and shows them in Grafana.
 Everything is installed by one playbook: `ansible/monitoring.yml`.
@@ -40,13 +41,14 @@ flowchart LR
    A new app node in `[app]` is monitored after the next `monitoring.yml` run.
 3. Grafana gets the Prometheus data source and the **TravelAgency overview** dashboard on start
    (provisioning), no clicks needed.
-4. Alert rules (`prometheus/alerts.yml`) are evaluated by Prometheus and shown in **Alerts**.
+4. Alert rules (`prometheus/alerts.yml`) are evaluated by Prometheus. Firing alerts go to
+   **Alertmanager**, which groups them and sends them to **Telegram** (also when they are resolved).
 
 ## Servers
 
 | CT | Name | IP | Role |
 |---|---|---|---|
-| 309 | vm-monitor | `192.168.18.108` | Prometheus, Grafana, Blackbox, redis_exporter (Docker) |
+| 309 | vm-monitor | `192.168.18.108` | Prometheus, Alertmanager, Grafana, Blackbox, redis_exporter, pve-exporter (Docker) |
 
 ## Files
 
@@ -54,9 +56,11 @@ flowchart LR
 |---|---|
 | `ansible/monitoring.yml` | Installs all exporters and starts the monitoring stack |
 | `ansible/prometheus.yml.j2` | Prometheus config; targets come from the inventory |
+| `ansible/alertmanager.yml.j2` | Alertmanager config: route, Telegram receiver, inhibit rule |
 | `ansible/inventory.ini`, `ansible/provision.yml` | New host `vm-monitor` (CT 309, nesting for Docker) |
 | `ansible/group_vars/all.yml` | Monitoring settings, `GRAFANA_ADMIN_PASSWORD` and `PVE_EXPORTER_TOKEN` from env |
 | `monitoring/docker-compose.yml` | Prometheus, Grafana, Blackbox, redis_exporter, pve-exporter |
+| `monitoring/alertmanager/telegram.tmpl` | Text of the Telegram message |
 | `monitoring/prometheus/alerts.yml` | Alert rules and the `lxc:cpu_used:percent` recording rule |
 | `monitoring/blackbox/blackbox.yml` | HTTP check module |
 | `monitoring/jmx/tomcat.yml` | JMX exporter rules for Tomcat |
@@ -75,7 +79,7 @@ pveum user token add monitoring@pve prometheus --privsep 0   # copy the "value"
 
 ```bash
 cd ansible
-# add GRAFANA_ADMIN_PASSWORD=... and PVE_EXPORTER_TOKEN=<value> to .env
+# add GRAFANA_ADMIN_PASSWORD, PVE_EXPORTER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID to .env
 set -a; source .env; set +a
 ansible-playbook provision.yml     # creates vm-monitor (existing containers are not changed)
 ansible-playbook monitoring.yml
@@ -85,9 +89,16 @@ Open:
 
 - Grafana: `http://192.168.18.108:3000` (user `admin`, password from `GRAFANA_ADMIN_PASSWORD`)
 - Prometheus targets: `http://192.168.18.108:9090/targets`
+- Alertmanager: `http://192.168.18.108:9093`
 
 Tomcat is restarted once (to load the Java agent), **one node at a time** (`serial: 1`),
 so the site stays up behind the load balancer.
+
+## Screenshots
+
+![Grafana: TravelAgency overview](images/grafana-dashboard.png)
+
+![Telegram alerts](images/telegram-alerts.png)
 
 ## Check
 
@@ -100,7 +111,8 @@ curl -s http://192.168.18.106:9100/metrics | grep -c '^node_'                 # 
 - Prometheus → Status → Targets: every target is **UP**.
 - Grafana → Dashboards → TravelAgency → **TravelAgency overview**: all panels have data.
 - `systemctl stop tomcat9` on `vm-app2`: after 1 minute **App nodes up** is `1`, alerts
-  `TargetDown` and `SiteDown` are firing, and **Site (load balancer)** is still **UP**.
+  `TargetDown` and `SiteDown` are firing, **Site (load balancer)** is still **UP**, and
+  Telegram gets 🔴 messages; after `systemctl start tomcat9` it gets ✅ resolved.
 - A second run of `monitoring.yml` shows no Tomcat restart.
 
 ## Tool versions
@@ -108,6 +120,7 @@ curl -s http://192.168.18.106:9100/metrics | grep -c '^node_'                 # 
 | Tool | Version |
 |---|---|
 | Prometheus | `prom/prometheus:v3.15.1` |
+| Alertmanager | `prom/alertmanager:v0.34.1` |
 | Grafana | `grafana/grafana:13.2.5` |
 | Blackbox exporter | `prom/blackbox-exporter:v0.29.1` |
 | redis_exporter | `oliver006/redis_exporter:v1.95.0` |
