@@ -12,17 +12,6 @@
 ![Trivy](https://img.shields.io/badge/Trivy-image%20scan-1904DA?logo=aqua&logoColor=white)
 ![Prometheus](https://img.shields.io/badge/Prometheus-monitoring-E6522C?logo=prometheus&logoColor=white)
 ![Grafana](https://img.shields.io/badge/Grafana-dashboards-F46800?logo=grafana&logoColor=white)
->>>>>>> 1ba0a0c (Update README and REPORT.md for monitoring setup; add Telegram alert integration details and remove obsolete REPORT.md)
-
-The Travel Agency web app (Java 17, Spring MVC 5, Hibernate, JSP) runs on
-**two app nodes** behind an **nginx load balancer**. HTTP sessions are stored
-in **Redis**, so a user stays logged in on any node. The database schema is
-managed by **Flyway**.
-
-All servers are Proxmox LXC containers (Ubuntu 22.04), created and configured
-by Ansible. There are no manual steps on the servers.
-
-<<<<<<< HEAD
 ## How it works
 
 ```mermaid
