@@ -8,7 +8,7 @@ See the health of the application and the infrastructure in one place:
 - **application:** is the site up, how fast it answers, requests and errors per node,
   JVM heap and garbage collection, busy Tomcat threads;
 - **data stores:** MySQL connections and queries, Redis memory and sessions;
-- **alerts** when something is down or close to a limit.
+- **alerts** in Telegram when something is down or close to a limit.
 
 ---
 
@@ -57,7 +57,11 @@ flowchart LR
 | Secrets (`GRAFANA_ADMIN_PASSWORD`, `REDIS_PASSWORD`) only in `.env` | Same as the other playbooks; on the server `.env` is `0600`, Ansible uses `no_log`. |
 | Images pinned to exact versions | A `docker compose pull` never upgrades by surprise. |
 | CPU from the **Proxmox API** (pve-exporter), not node_exporter | Inside LXC node_exporter reads `/proc/stat` through lxcfs and shows far too high CPU. Proxmox counts the real CPU of every container. A recording rule `lxc:cpu_used:percent` names it like the host (`vm-app`). Read-only user `monitoring@pve` with role `PVEAuditor`. |
-| Alert rules without Alertmanager (for now) | Rules are visible in Prometheus; sending to Telegram is the next step. |
+| **Alertmanager → Telegram** (built-in `telegram_configs`) | No extra bot service; Telegram is free and on the phone. `send_resolved` tells when it is fixed. |
+| `group_by: [alertname, instance]`, `group_wait: 30s`, `repeat_interval: 4h` | One message per problem and server, not a flood; a reminder if it is still broken. |
+| Inhibit rule: critical hides warnings of the same `instance` | When a server is down, its CPU/heap warnings are noise. |
+| `alertmanager.yml` made by Ansible, mode `0640`, group `65534` | It has the bot token: only root and the container user (`nobody`) can read it. |
+| Message template in Git (`telegram.tmpl`), HTML | Short text: 🔴/🟠/✅, alert, server, summary, time. |
 
 ---
 
@@ -109,7 +113,12 @@ the alerts fire, and the site through the load balancer is still **UP**.
 
 ![Grafana: one app node down](images/grafana-node-down.png)
 
-The same screenshots show a problem: **CPU used** from node_exporter stays at 50–90% on all
+Telegram: Alertmanager sends 🔴 when an alert fires and ✅ when it is resolved. The first
+real alert was `DiskAlmostFull` on `vm-app` (disk `/` 100% full), found by the monitoring itself.
+
+![Telegram: alerts and resolved](images/telegram-alerts.png)
+
+The first screenshots also showed a problem: **CPU used** from node_exporter stays at 50–90% on all
 containers, and `HighCpu` fires everywhere. See section 7.
 
 ---
@@ -119,7 +128,8 @@ containers, and `HighCpu` fires everywhere. See section 7.
 - LXC containers share the Proxmox kernel. node_exporter CPU inside LXC was 50–90% on idle
   containers (lxcfs), so CPU is taken from Proxmox. RAM and disk from node_exporter are correct;
   load average and disk I/O are for the whole host.
-- No Alertmanager yet: alerts are only visible in the Prometheus UI.
+- Telegram is the only channel. If `vm-monitor` itself is down, no alert is sent (no dead man's switch).
+- One failure can send 2 messages (`TargetDown` of the exporter and `SiteDown` of the node).
 - No logs yet (Loki is the next step), no container metrics (cAdvisor): the app runs in Tomcat, not in Docker.
 - Prometheus and Grafana have no TLS; Prometheus has no login. This is fine only inside the local network.
 - One Prometheus: if `vm-monitor` is down, there is no monitoring (and no alert about it).
@@ -140,3 +150,5 @@ containers, and `HighCpu` fires everywhere. See section 7.
 | Alert test (stop one node) | ✅ Done |
 | Idempotency (second run, no Tomcat restart) | ✅ Done |
 | CPU from Proxmox (pve-exporter) instead of node_exporter | ✅ Done |
+| Alertmanager + Telegram bot | ✅ Done |
+| Telegram test: node down → 🔴, node up → ✅ | ✅ Done |

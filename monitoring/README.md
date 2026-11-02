@@ -94,6 +94,73 @@ Open:
 Tomcat is restarted once (to load the Java agent), **one node at a time** (`serial: 1`),
 so the site stays up behind the load balancer.
 
+## Telegram alerts
+
+Prometheus evaluates the rules in `prometheus/alerts.yml`. A firing alert goes to Alertmanager
+(`ansible/alertmanager.yml.j2`), which sends it to Telegram with the text from
+`alertmanager/telegram.tmpl`.
+
+| Setting | Value | Why |
+|---|---|---|
+| `group_by` | `[alertname, instance]` | One message per problem and server |
+| `group_wait` | `30s` | Alerts that fire together come in one message |
+| `group_interval` | `5m` | New alerts in an open group at most every 5 min |
+| `repeat_interval` | `4h` | Reminder while it is still broken |
+| `send_resolved` | `true` | ✅ message when it is fixed |
+| inhibit rule | critical hides warnings of the same `instance` | No CPU/heap noise when a server is down |
+
+### Set up
+
+1. In Telegram open **@BotFather** → `/newbot` → name → username ending with `bot`.
+   BotFather returns the **bot token** (`123456789:AA...`). Keep it secret.
+2. Open the new bot and press **Start**, otherwise it cannot write to you.
+3. Get your **chat id**: open `https://api.telegram.org/bot<TOKEN>/getUpdates` and take
+   `"chat":{"id":...}` from your message. A group id starts with `-100`.
+4. Check that the bot can write to you:
+
+   ```bash
+   curl -s "https://api.telegram.org/bot<TOKEN>/sendMessage" -d chat_id=<CHAT_ID> -d text="test"
+   ```
+
+5. Add both values to `ansible/.env` and run the playbook:
+
+   ```bash
+   TELEGRAM_BOT_TOKEN=123456789:AA...
+   TELEGRAM_CHAT_ID=123456789
+   ```
+
+   ```bash
+   cd ansible
+   set -a; source .env; set +a
+   ansible-playbook monitoring.yml
+   ```
+
+   Ansible writes `/opt/monitoring/alertmanager/alertmanager.yml` on `vm-monitor`
+   (mode `0640`, group `65534`: it holds the token) and reloads Prometheus and Alertmanager.
+
+### Test
+
+```bash
+# a test alert straight to Alertmanager (on vm-monitor, in /opt/monitoring)
+docker compose exec alertmanager amtool --alertmanager.url=http://localhost:9093 \
+  alert add TestAlert severity=critical instance=test --annotation='summary="test from amtool"'
+
+# a real one: keep a node down for 3 minutes (1 min "for:" + 30 s group_wait)
+ssh root@192.168.18.105 systemctl stop tomcat9
+ssh root@192.168.18.105 systemctl start tomcat9
+```
+
+Telegram gets 🔴 `TargetDown` / `SiteDown` for `vm-app2`, then ✅ resolved.
+
+### Troubleshooting
+
+| Check | Command (on `vm-monitor`) |
+|---|---|
+| Prometheus knows Alertmanager | `curl -s localhost:9090/api/v1/alertmanagers` (not empty) |
+| Alertmanager got the alert | `http://192.168.18.108:9093` |
+| Alertmanager sent it | `curl -s localhost:9093/metrics \| grep 'notifications_total{integration="telegram"}'` |
+| Why it failed | `docker compose logs alertmanager \| grep -i -E 'telegram\|notify\|error'` |
+
 ## Screenshots
 
 ![Grafana: TravelAgency overview](images/grafana-dashboard.png)
