@@ -1,3 +1,4 @@
+
 ---
 # Run:  set -a; source .env; set +a     (load secrets, once per terminal)
 #       ansible-playbook monitoring.yml
@@ -19,7 +20,9 @@
           - grafana_admin_password | length > 0
           - redis_password | length > 0
           - pve_exporter_token | length > 0
-        fail_msg: "GRAFANA_ADMIN_PASSWORD, REDIS_PASSWORD or PVE_EXPORTER_TOKEN is empty. Run:  set -a; source .env; set +a"
+          - telegram_bot_token | length > 0
+          - telegram_chat_id | length > 0
+        fail_msg: "A secret is empty (GRAFANA_ADMIN_PASSWORD, REDIS_PASSWORD, PVE_EXPORTER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID). Run:  set -a; source .env; set +a"
         quiet: true
 
 # ============================================================
@@ -192,6 +195,17 @@
         mode: "0644"
       register: prom_config
 
+    # Has the bot token: readable only by root and by the container user (nobody = 65534)
+    - name: Make the Alertmanager config (Telegram)
+      ansible.builtin.template:
+        src: alertmanager.yml.j2
+        dest: "{{ monitoring_dir }}/alertmanager/alertmanager.yml"
+        owner: root
+        group: "65534"
+        mode: "0640"
+      no_log: true
+      register: am_config
+
     - name: Write secrets for docker compose
       ansible.builtin.copy:
         dest: "{{ monitoring_dir }}/.env"
@@ -224,6 +238,17 @@
       delay: 3
       when: files.changed or prom_config.changed
 
+    # Alertmanager also reads its config only on start or reload
+    - name: Reload Alertmanager if its config or template changed
+      ansible.builtin.uri:
+        url: http://localhost:9093/-/reload
+        method: POST
+      register: am_reload
+      until: am_reload.status == 200
+      retries: 10
+      delay: 3
+      when: files.changed or am_config.changed
+
     - name: Wait until Grafana answers
       ansible.builtin.uri:
         url: http://localhost:3000/api/health
@@ -238,3 +263,4 @@
         msg:
           - "Grafana:    http://{{ ansible_host }}:3000  (admin / GRAFANA_ADMIN_PASSWORD)"
           - "Prometheus: http://{{ ansible_host }}:9090/targets  (all targets must be UP)"
+          - "Alertmanager: http://{{ ansible_host }}:9093  (alerts sent to Telegram)"

@@ -1,7 +1,8 @@
-# Monitoring stack on vm-monitor: Prometheus + Grafana + Blackbox + Redis and Proxmox exporters
+
+# Monitoring stack on vm-monitor: Prometheus + Alertmanager + Grafana + Blackbox + Redis and Proxmox exporters
 # Installed by:  ansible-playbook monitoring.yml   (copies this folder to /opt/monitoring)
 # By hand:       docker compose up -d   (needs prometheus/prometheus.yml and .env, Ansible makes both)
-# UI:            Grafana http://<vm-monitor>:3000   Prometheus http://<vm-monitor>:9090
+# UI:            Grafana http://<vm-monitor>:3000   Prometheus :9090   Alertmanager :9093
 
 services:
   prometheus:
@@ -16,6 +17,19 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
+    restart: unless-stopped
+
+  # Gets firing alerts from Prometheus, groups them and sends them to Telegram
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro   # alertmanager.yml (made by Ansible) + telegram.tmpl
+      - alertmanager-data:/alertmanager       # silences and sent notifications survive a restart
+    ports:
+      - "9093:9093"
     restart: unless-stopped
 
   grafana:
@@ -70,4 +84,5 @@ services:
 
 volumes:
   prometheus-data:
+  alertmanager-data:
   grafana-data:

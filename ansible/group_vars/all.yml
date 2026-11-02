@@ -40,3 +40,5 @@ proxmox_host: 192.168.18.200             # Proxmox API for pve-exporter (CPU of 
 pve_exporter_user: monitoring@pve        # read-only user (role PVEAuditor)
 pve_exporter_token_name: prometheus
 pve_exporter_token: "{{ lookup('ansible.builtin.env', 'PVE_EXPORTER_TOKEN') }}"  # secret: comes from .env
+telegram_bot_token: "{{ lookup('ansible.builtin.env', 'TELEGRAM_BOT_TOKEN') }}"  # secret: from @BotFather, comes from .env
+telegram_chat_id: "{{ lookup('ansible.builtin.env', 'TELEGRAM_CHAT_ID') }}"      # your chat id (a number), comes from .env

@@ -1,0 +1,27 @@
+
+# Managed by Ansible (monitoring.yml). Alertmanager sends Prometheus alerts to Telegram.
+templates:
+  - /etc/alertmanager/telegram.tmpl
+
+route:
+  receiver: telegram
+  group_by: [alertname, instance]   # one message per alert and server
+  group_wait: 30s                   # wait for more alerts of the same group before the first message
+  group_interval: 5m                # new alerts in a group that already fired: at most every 5 min
+  repeat_interval: 4h               # remind if it is still broken
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token: "{{ telegram_bot_token }}"
+        chat_id: {{ telegram_chat_id }}
+        parse_mode: HTML
+        send_resolved: true         # also send "resolved" when it is fixed
+        message: '{% raw %}{{ template "telegram.message" . }}{% endraw %}'
+
+# A server that is down also makes its exporters fail.
+# While a critical alert fires for a server, warnings for the same server are not sent.
+inhibit_rules:
+  - source_matchers: [severity="critical"]
+    target_matchers: [severity="warning"]
+    equal: [instance]

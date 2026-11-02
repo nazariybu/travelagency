@@ -1,0 +1,17 @@
+
+{{/* Telegram message for one group of alerts (parse_mode: HTML). An empty line between alerts. */}}
+{{ define "telegram.message" -}}
+{{ range $i, $a := .Alerts -}}
+{{ if $i }}
+
+{{ end -}}
+{{ if eq $a.Status "firing" -}}
+{{ if eq $a.Labels.severity "critical" }}🔴{{ else }}🟠{{ end }} <b>{{ $a.Labels.alertname }}</b> on {{ $a.Labels.instance }}
+{{ $a.Annotations.summary }}
+Since {{ $a.StartsAt.Format "02.01 15:04 MST" }}
+{{- else -}}
+✅ <b>{{ $a.Labels.alertname }}</b> on {{ $a.Labels.instance }} is resolved
+Was: {{ $a.Annotations.summary }}
+{{- end }}
+{{- end }}
+{{- end }}
