@@ -1,154 +1,105 @@
-# Report: monitoring with Prometheus and Grafana
+# Report: load test and scalability plan
 
 ## 1. Goal
 
-See the health of the application and the infrastructure in one place:
-
-- **infrastructure:** CPU, RAM, disk and network of every server;
-- **application:** is the site up, how fast it answers, requests and errors per node,
-  JVM heap and garbage collection, busy Tomcat threads;
-- **data stores:** MySQL connections and queries, Redis memory and sessions;
-- **alerts** in Telegram when something is down or close to a limit.
-
----
+Find out how many users TravelAgency can serve on the current servers, which part breaks first,
+and what to change to serve more. Stage: "Monitor resource usage and plan for scalability".
 
 ## 2. Choices
 
 | Need | Option | Plus | Minus |
 |------|--------|------|-------|
-| Metrics DB | **Prometheus** ✅ | Standard, pull model, PromQL, many exporters | Not for logs or long-term storage |
-| | Zabbix | Agent + UI in one | Heavier, less common with Docker/k8s |
-| Dashboards | **Grafana** ✅ | Provisioning from files, community dashboards | One more service |
-| JVM / Tomcat metrics | **JMX exporter as `-javaagent`** ✅ | No code change; JVM + Tomcat MBeans | Tomcat restart once |
-| | Micrometer in the app | Custom business metrics | Code change; this is not Spring Boot (no Actuator) |
-| Where to run Prometheus + Grafana | **New LXC `vm-monitor`, Docker Compose** ✅ | Separate from the app; one-file setup; pinned versions | One more container (2 GB RAM) |
-| | On `vm-jenkins` | No new server | Monitoring would die together with Jenkins |
+| Load tool | **k6** ✅ | Test is JavaScript in Git, thresholds = pass/fail for CI, pushes to Prometheus | No browser (JS, images are not loaded) |
+| | JMeter | GUI, many plugins | XML test files, heavy, hard to review in Git |
+| | Locust | Python | Needs extra exporter for Prometheus |
+| Results storage | **Prometheus remote write** ✅ | Same Prometheus and Grafana as the servers, one time axis | k6 output is still "experimental" |
+| | InfluxDB | Classic k6 + Grafana setup | One more database to run |
+| Percentiles | **Native histograms** ✅ | Correct p95 for any group of requests | Needs Prometheus 2.40+ (we have 3.x) |
 
----
+## 3. Test
 
-## 3. How it works
+User journey (one iteration): log in → hotel list → search form → search free rooms for random dates
+→ book a random room → booking page → my bookings → log out. Pause 1 s between pages.
+Details and how to run: [README.md](README.md).
 
-```mermaid
-flowchart LR
-    P["Prometheus<br/>vm-monitor :9090"] -->|scrape 15s| N["node_exporter :9100<br/>all servers"]
-    P --> J["JMX agent :9404<br/>vm-app, vm-app2"]
-    P --> MY["mysqld_exporter :9104<br/>vm-db"]
-    P --> RE["redis_exporter<br/>(compose)"] --> R[("vm-redis")]
-    P --> BB["blackbox<br/>(compose)"] -->|HTTP| LB["vm-lb, app nodes"]
-    G["Grafana :3000"] --> P
-```
+## 4. Found in the code before the test
 
----
+These come from reading the code. The load test (section 5) shows how much they cost on the real servers.
 
-## 4. Design choices
+| # | Problem | Where | Effect under load |
+|---|---------|-------|-------------------|
+| 1 | **No DB connection pool**: `DriverManagerDataSource` opens a new MySQL connection for every DB access | `HibernateConfig.dataSource()` | TCP + auth on every request: ~1 new MySQL connection per HTTP request |
+| 2 | **N+1 queries**: `User.bookings` and `Booking.rooms` are `FetchType.EAGER`. Loading one user loads all bookings, all rooms of each booking, ... | `models/User.java`, `models/Booking.java` | ~230–300 SQL queries per HTTP request in the test; gets slower as bookings grow |
+| 3 | **Search writes**: every search saves 2 empty bookings (`HotelServiceImpl.searchHotels` and `HotelController.searchHotels`) | search | Booking table grows on every search, makes #2 worse over time |
+| 4 | `hibernate.show_sql: true` | `application.properties` | Every SQL query is written to the Tomcat log: CPU and disk |
+| 5 | Room has one `booking_id`: a new booking overwrites the old one | `BookingServiceImpl.prepareBookingForDate` | Two users can book the same room for the same dates (not speed, but correctness) |
+| 6 | Search shows only one room per class in each hotel (24 of 240) | `HotelServiceImpl.searchHotels` | All users fight for the same 24 rooms |
+| 7 | Login checks the password with bcrypt | Spring Security | ~50–100 ms CPU per login; normal and intended |
 
-| Choice | Why |
-|--------|-----|
-| Targets generated from `inventory.ini` | One source of truth: a new node in `[app]` is monitored after one playbook run. |
-| `instance` label = host name (`vm-app`), not IP | Readable legends and alerts. |
-| node_exporter and mysqld_exporter from Ubuntu packages | systemd service and user `prometheus` come with the package; `apt` updates them. |
-| JMX agent in a **separate** systemd drop-in (`monitoring.conf`) | `app.yml` keeps owning `travelagency.conf`; the two playbooks do not overwrite each other. |
-| `CATALINA_OPTS` instead of editing `/etc/default/tomcat9` | No change to a package file; `catalina.sh run` reads it from the environment. |
-| `serial: 1` for the app nodes | Tomcat restarts one node at a time, the load balancer keeps the site up. |
-| MySQL user `prometheus` with **auth_socket** | The exporter runs as Linux user `prometheus` and needs no password at all. Rights: `PROCESS, REPLICATION CLIENT, SELECT`. |
-| redis_exporter and Blackbox in the compose stack | They only need network access, so nothing is installed on `vm-redis` or `vm-lb`. |
-| Blackbox checks `/form-login` on the LB **and** on each node | The LB check is what users see; node checks show which node is down. |
-| Grafana data source and dashboard by **provisioning** | Rebuilding `vm-monitor` gives the same Grafana; the dashboard is in Git. |
-| Secrets (`GRAFANA_ADMIN_PASSWORD`, `REDIS_PASSWORD`) only in `.env` | Same as the other playbooks; on the server `.env` is `0600`, Ansible uses `no_log`. |
-| Images pinned to exact versions | A `docker compose pull` never upgrades by surprise. |
-| CPU from the **Proxmox API** (pve-exporter), not node_exporter | Inside LXC node_exporter reads `/proc/stat` through lxcfs and shows far too high CPU. Proxmox counts the real CPU of every container. A recording rule `lxc:cpu_used:percent` names it like the host (`vm-app`). Read-only user `monitoring@pve` with role `PVEAuditor`. |
-| **Alertmanager → Telegram** (built-in `telegram_configs`) | No extra bot service; Telegram is free and on the phone. `send_resolved` tells when it is fixed. |
-| `group_by: [alertname, instance]`, `group_wait: 30s`, `repeat_interval: 4h` | One message per problem and server, not a flood; a reminder if it is still broken. |
-| Inhibit rule: critical hides warnings of the same `instance` | When a server is down, its CPU/heap warnings are noise. |
-| `alertmanager.yml` made by Ansible, mode `0640`, group `65534` | It has the bot token: only root and the container user (`nobody`) can read it. |
-| Message template in Git (`telegram.tmpl`), HTML | Short text: 🔴/🟠/✅, alert, server, summary, time. |
+## 5. Results
 
----
+Grafana: dashboard **TravelAgency load test (k6)**, choose the run in **Test run**.
+Servers: all LXC containers run on one Proxmox host.
 
-## 5. Alert rules
+| Run (`testid`) | Users | Nodes serving | Requests/s | p95 | Errors | Bookings | Passed? |
+|----------------|-------|---------------|-----------|-----|--------|----------|---------|
+| load-20261103-0934 | 30 | 1 (vm-app2 only) | ~16 at start → ~8 at end | up to ~6 s | 0% | 689 | ❌ p95 > 1.5 s |
+| load-20261103-1000 | 30 | 2 (≈4.5 req/s each) | ~9 | ~8–10 s | 0% | 516 | ❌ p95 > 1.5 s |
 
-| Alert | Condition | For |
-|------|-----------|-----|
-| `TargetDown` | an exporter does not answer (`up == 0`) | 1m |
-| `SiteDown` | Blackbox check failed | 1m |
-| `SiteSlow` | response time > 2 s | 5m |
-| `HighCpu` | CPU > 80% of the cores of the container (from Proxmox) | 5m |
-| `LowMemory` | free RAM < 10% | 5m |
-| `DiskAlmostFull` | disk `/` > 85% | 10m |
-| `JvmHeapHigh` | heap > 90% of max | 5m |
-| `TomcatErrors` | > 0.1 responses 4xx/5xx per second | 5m |
-| `MySqlDown` | `mysql_up == 0` | 1m |
-| `RedisDown` | `redis_up == 0` | 1m |
+![First run: one node](../images/k6-load-1-node.png)
+![Second run: two nodes](../images/k6-load-2-nodes.png)
 
----
+### Finding 1: load balancing did not work
 
-## 6. How to check
+In the first run all traffic went to vm-app2, vm-app got 0 requests (panel "Tomcat requests/s per node"),
+but users saw no errors. Cause: the nginx config on vm-lb was an old one with `ip_hash;`.
+`ip_hash` uses only the first 3 parts of an IPv4 address, so every client from `192.168.18.x`
+(including k6 on vm-agent) went to the same node. Sessions are in Redis now, so sticky sessions are not
+needed. Fix: `ansible-playbook lb.yml` (the template has no `ip_hash`). Check: 20 requests through
+nginx → 10 on each node (`tomcat_requestcount_total`).
 
-1. `http://192.168.18.108:9090/targets`: all targets are **UP**.
-2. Grafana → **TravelAgency overview**: every panel has data.
-3. Open the site a few times: **Requests per second** grows on both nodes (round-robin).
-4. `systemctl stop tomcat9` on `vm-app2`: after ~1 min `TargetDown` and `SiteDown` (for `vm-app2`)
-   are **firing**, **App nodes up** = 1, **Site (load balancer)** stays **UP**.
-5. `systemctl start tomcat9`: the alerts go back to **inactive**.
-6. A second run of `monitoring.yml`: Tomcat is not restarted.
+### Finding 2: the bottleneck is the application code, not the number of nodes
 
-### Screenshots
+| Signal | Run 1 | Run 2 |
+|--------|-------|-------|
+| CPU of app nodes | vm-app2 ~100% | both ~90–100% |
+| GC time | ~0.25 s per second | 0.1–0.3 s per second on each node |
+| MySQL queries per HTTP request | ~230 | ~300 |
+| Data from DB per HTTP request | ~2 MB | ~2.8 MB |
+| New MySQL connections per HTTP request | ~1 | ~1 |
+| MySQL running queries | ~0 (DB is not busy) | ~0 |
 
-All 16 targets are UP (`up` query): node_exporter on 8 servers, Tomcat on 2 nodes,
-MySQL, Redis, Blackbox for the load balancer and both nodes, Prometheus itself.
+- Requests/s fell while the number of users stayed the same (run 1: 16 → 8 req/s). Every iteration adds
+  3 rows to `Booking` (2 from search + 1 booking), and `FetchType.EAGER` loads all bookings of the user
+  with all their rooms on every page. More data → every request is more expensive (problems #2 and #3).
+- Two nodes in run 2 gave about the same req/s as one node at the end of run 1: the data had grown,
+  and all containers share the CPU of one Proxmox host.
+- The database itself is not the limit: few connections, almost no running queries. The app nodes spend
+  CPU on loading and garbage-collecting huge object graphs.
 
-![Prometheus: all targets UP](images/prometheus-targets-up.png)
+**Capacity now:** about 8–9 req/s (~30 users with 1 s think time) at p95 far above the goal.
+Adding nodes on the same host will not help until steps 1–3 of the plan are done.
 
-All 10 alert rules are loaded from `/etc/prometheus/alerts.yml`.
+## 6. Scalability plan
 
-![Prometheus: alert rules](images/prometheus-alerts.png)
+Order: first cheap fixes in the code (they give the most), then more servers.
 
-Grafana dashboard **TravelAgency overview**: site UP, both nodes up, 0 targets down,
-requests on both nodes (round-robin), JVM heap, server resources, MySQL and Redis.
+| Step | What | Why | Expected effect | Check with |
+|------|------|-----|-----------------|------------|
+| 1 | Connection pool **HikariCP** (`maximumPoolSize` ~10–20 per node) instead of `DriverManagerDataSource` | Problem #1 | Fewer DB connections, lower latency on every page | "New MySQL connections/s" drops to ~0 |
+| 2 | `FetchType.LAZY` for `User.bookings`, `Booking.rooms`; `JOIN FETCH` only where a page needs it | Problem #2 | Tens of times fewer queries per page | MySQL queries/s per request/s |
+| 3 | Search must not save bookings; create the booking only on "Book" | Problem #3 | No table growth from search | Booking row count after test |
+| 4 | `hibernate.show_sql: false` in production | Problem #4 | Less CPU and log disk | CPU vm-app |
+| 5 | Indexes on `Booking(start_date, end_date)`, booking table for room+dates instead of `Room.booking_id` | #5, #6, faster search | Correct bookings, faster availability query | p95 of search |
+| 6 | Horizontal: add app nodes (vm-app3, ...) to `[app]` in inventory, run `app.yml`, `lb.yml` | Sessions are already in Redis, so any node can serve any user | ~linear growth while the DB is not the limit | Requests/s per node equal |
+| 7 | Vertical for the DB: more CPU/RAM to vm-db, `innodb_buffer_pool_size` ~70% of RAM | After step 6 the DB becomes the limit | | CPU vm-db, running queries |
+| 8 | Read replica for MySQL / cache for hotel list | If the DB is still the limit | | |
+| 9 | Later: Kubernetes HPA (scale pods by CPU or by requests/s) | Plan stage "Orchestration via k8s" | Automatic scaling | |
 
-![Grafana: TravelAgency overview](images/grafana-dashboard.png)
+After every step: run the same `stress` test and compare in Grafana (two `testid` side by side).
 
-Failover test: `tomcat9` stopped on `vm-app2`. **App nodes up** = 1, **Targets down** = 1,
-the alerts fire, and the site through the load balancer is still **UP**.
+## 7. Alerts linked to the test
 
-![Grafana: one app node down](images/grafana-node-down.png)
-
-Telegram: Alertmanager sends 🔴 when an alert fires and ✅ when it is resolved. The first
-real alert was `DiskAlmostFull` on `vm-app` (disk `/` 100% full), found by the monitoring itself.
-
-![Telegram: alerts and resolved](images/telegram-alerts.png)
-
-The first screenshots also showed a problem: **CPU used** from node_exporter stays at 50–90% on all
-containers, and `HighCpu` fires everywhere. See section 7.
-
----
-
-## 7. Known limits
-
-- LXC containers share the Proxmox kernel. node_exporter CPU inside LXC was 50–90% on idle
-  containers (lxcfs), so CPU is taken from Proxmox. RAM and disk from node_exporter are correct;
-  load average and disk I/O are for the whole host.
-- Telegram is the only channel. If `vm-monitor` itself is down, no alert is sent (no dead man's switch).
-- One failure can send 2 messages (`TargetDown` of the exporter and `SiteDown` of the node).
-- No logs yet (Loki is the next step), no container metrics (cAdvisor): the app runs in Tomcat, not in Docker.
-- Prometheus and Grafana have no TLS; Prometheus has no login. This is fine only inside the local network.
-- One Prometheus: if `vm-monitor` is down, there is no monitoring (and no alert about it).
-
----
-
-## 8. Status
-
-| Step | Status |
-|------|--------|
-| Container `vm-monitor` (CT 309) | ✅ Done |
-| node_exporter on all servers | ✅ Done |
-| JMX exporter in Tomcat on both nodes | ✅ Done |
-| mysqld_exporter on `vm-db` | ✅ Done |
-| Prometheus + Grafana + Blackbox + redis_exporter | ✅ Done |
-| All targets UP | ✅ Done |
-| Dashboard with data | ✅ Done |
-| Alert test (stop one node) | ✅ Done |
-| Idempotency (second run, no Tomcat restart) | ✅ Done |
-| CPU from Proxmox (pve-exporter) instead of node_exporter | ✅ Done |
-| Alertmanager + Telegram bot | ✅ Done |
-| Telegram test: node down → 🔴, node up → ✅ | ✅ Done |
+The Telegram alerts from the monitoring stage fire during the stress test. Expected: `HighCpu`
+(> 80%), maybe `SiteSlow` (> 2 s) and `TomcatErrors`. This proves the alerts work under load.
+Do not run stress tests during the day on shared servers.
