@@ -74,19 +74,27 @@ vault kv put secret/travelagency/proxmox    token_secret=...
 
 ## 6. Results
 
-Fill in after the run.
+Run on 03.11.2026.
 
 | Check | Expected | Result |
 |-------|----------|--------|
-| `vault status` | `Initialized true`, `Sealed false`, `Storage Type raft` | |
-| `vault version` | | |
-| `ansible-playbook app.yml` with the same secrets from Vault | `failed=0`, nothing redeployed (same passwords) | |
-| `ansible-playbook monitoring.yml` | `failed=0`, node_exporter on vm-vault, Prometheus target `vm-vault` UP | |
-| `ansible/.env` | deleted, `env \| grep PASSWORD` empty | |
-| Jenkins build of `secrets-vault`, stage Deploy | green, no `db-password` / `redis-password` credentials in Jenkins | |
-| Token with policy `jenkins-deploy` reads `secret/travelagency/monitoring` | `permission denied` (403); `app` is readable | |
-| AppRole login from the ansible host (not vm-agent) | `permission denied` / `source address unauthorized` | |
-| Restart Vault | `Sealed true`, playbook fails with "Vault is sealed", Telegram `SiteDown`; after 2 unseal keys all OK | |
+| `vault status` | `Initialized true`, `Sealed false`, `Storage Type raft` | ✅ OK |
+| `vault version` | | `Vault v2.2.1` |
+| `ansible-playbook app.yml` with the secrets from Vault | `failed=0`; DB user and `travelagency.conf` (passwords) `ok`, not `changed` = the same passwords came from Vault. The WAR is rebuilt because the branch changed | ✅ OK |
+| `ansible-playbook monitoring.yml` | `failed=0`, node_exporter on vm-vault, Prometheus target `vm-vault` UP | ✅ OK |
+| `ansible/.env` | deleted, `env \| grep -cE 'PASSWORD\|TOKEN_SECRET\|BOT_TOKEN'` = 0 | ✅ OK (0) |
+| Ansible reads secrets only from Vault (ad-hoc `debug` of the secret lengths, no `.env`) | lengths > 0 | ✅ OK |
+| Jenkins build of `secrets-vault`, stage Deploy | green, no `db-password` / `redis-password` credentials in Jenkins | ✅ OK |
+| Token with policy `jenkins-deploy` reads `secret/travelagency/monitoring` | `permission denied` (403); `app` is readable | ✅ OK |
+| Restart Vault | `Sealed true`, playbook fails with "Vault is sealed", Telegram `SiteDown`; after 2 unseal keys all OK | ✅ OK |
+
+### Problems found during the setup
+
+| # | Problem | Cause | Fix |
+|---|---------|-------|-----|
+| 1 | `provision.yml` failed with `No Vault Token specified or discovered` although `PROXMOX_TOKEN_SECRET` was set | `proxmox_token: "{{ A if A else vault_proxmox... }}"`: this Ansible version templated **both** parts of the inline `if`, so it asked Vault before Vault existed | Two `set_fact` tasks: first from the terminal, second from Vault with `when: proxmox_token \| length == 0`. A task skipped by `when` is not templated at all (commit `fix(provision)`) |
+| 2 | `'db_password' is undefined` in an ad-hoc `ansible localhost ...` | Command was run in the repo root: `ansible.cfg`, `inventory.ini`, `group_vars/` are read from the current folder | Run Ansible commands from `ansible/` |
+| 3 | `ansible-galaxy collection install` said "Nothing to do" | `community.hashi_vault` already comes with the `ansible` package | Nothing to fix, the installed version matches `>=6.2.0,<7.0.0` |
 
 ## 7. What is still not perfect
 
