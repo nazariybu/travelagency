@@ -1,198 +1,124 @@
-# Travel Agency: monitoring with Prometheus and Grafana
+# Load test with k6
 
-![Prometheus](https://img.shields.io/badge/Prometheus-metrics-E6522C?logo=prometheus&logoColor=white)
-![Grafana](https://img.shields.io/badge/Grafana-dashboards-F46800?logo=grafana&logoColor=white)
-![Ansible](https://img.shields.io/badge/Ansible-automation-EE0000?logo=ansible&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
-![Telegram](https://img.shields.io/badge/Telegram-alerts-26A5E4?logo=telegram&logoColor=white)
+k6 plays real customers: **log in → open hotels → search free rooms → book → my bookings → log out**,
+all through nginx on vm-lb. Results go to Prometheus (remote write) and are shown in Grafana
+on the dashboard **TravelAgency load test (k6)**, next to CPU, Tomcat threads, JVM heap and MySQL.
 
-One new server, `vm-monitor`, collects metrics from every server and shows them in Grafana.
-Everything is installed by one playbook: `ansible/monitoring.yml`.
-
-| What we watch | Exporter | Where it runs | Port |
-|---|---|---|---|
-| CPU, RAM, disk, network of every server | `node_exporter` (Ubuntu package) | every server | 9100 |
-| JVM heap, GC, threads, Tomcat requests and errors | JMX exporter (`-javaagent` in Tomcat) | `vm-app`, `vm-app2` | 9404 |
-| MySQL connections, queries, slow queries | `mysqld_exporter` (Ubuntu package) | `vm-db` | 9104 |
-| Redis memory, clients, session keys | `redis_exporter` | `vm-monitor` (Docker) | 9121 |
-| Real CPU of every LXC (node_exporter CPU is wrong in LXC) | `prometheus-pve-exporter` (Proxmox API) | `vm-monitor` (Docker) | 9221 |
-| The site from outside: up or down, response time | Blackbox exporter | `vm-monitor` (Docker) | 9115 |
-
-## How it works
-
-```mermaid
-flowchart LR
-    subgraph M["vm-monitor 192.168.18.108 (Docker Compose)"]
-        P["Prometheus :9090"]
-        G["Grafana :3000"]
-        B["Blackbox"]
-        RE["redis_exporter"]
-    end
-    G -->|PromQL| P
-    P -->|":9100 node"| ALL["every server"]
-    P -->|":9404 JVM + Tomcat"| A["vm-app, vm-app2"]
-    P -->|":9104"| DB[("vm-db")]
-    P --> RE -->|":6379"| R[("vm-redis")]
-    P --> B -->|"GET /form-login"| LB["vm-lb + each app node"]
 ```
-
-1. Prometheus **pulls** (scrapes) `/metrics` from every exporter every 15 s and keeps the data for 15 days.
-2. The target list is made by Ansible from `inventory.ini` (`ansible/prometheus.yml.j2`).
-   A new app node in `[app]` is monitored after the next `monitoring.yml` run.
-3. Grafana gets the Prometheus data source and the **TravelAgency overview** dashboard on start
-   (provisioning), no clicks needed.
-4. Alert rules (`prometheus/alerts.yml`) are evaluated by Prometheus. Firing alerts go to
-   **Alertmanager**, which groups them and sends them to **Telegram** (also when they are resolved).
-
-## Servers
-
-| CT | Name | IP | Role |
-|---|---|---|---|
-| 309 | vm-monitor | `192.168.18.108` | Prometheus, Alertmanager, Grafana, Blackbox, redis_exporter, pve-exporter (Docker) |
+ k6 (ansible host / PC) ──HTTP──> nginx vm-lb ──> Tomcat vm-app, vm-app2 ──> MySQL vm-db
+        │                                               └──> Redis vm-redis (sessions)
+        └──remote write──> Prometheus vm-monitor <──scrape── node / jmx / mysqld / redis / pve exporters
+                                  └──> Grafana: "TravelAgency load test (k6)"
+```
 
 ## Files
 
-| File | Purpose |
-|---|---|
-| `ansible/monitoring.yml` | Installs all exporters and starts the monitoring stack |
-| `ansible/prometheus.yml.j2` | Prometheus config; targets come from the inventory |
-| `ansible/alertmanager.yml.j2` | Alertmanager config: route, Telegram receiver, inhibit rule |
-| `ansible/inventory.ini`, `ansible/provision.yml` | New host `vm-monitor` (CT 309, nesting for Docker) |
-| `ansible/group_vars/all.yml` | Monitoring settings, `GRAFANA_ADMIN_PASSWORD` and `PVE_EXPORTER_TOKEN` from env |
-| `monitoring/docker-compose.yml` | Prometheus, Grafana, Blackbox, redis_exporter, pve-exporter |
-| `monitoring/alertmanager/telegram.tmpl` | Text of the Telegram message |
-| `monitoring/prometheus/alerts.yml` | Alert rules and the `lxc:cpu_used:percent` recording rule |
-| `monitoring/blackbox/blackbox.yml` | HTTP check module |
-| `monitoring/jmx/tomcat.yml` | JMX exporter rules for Tomcat |
-| `monitoring/grafana/provisioning/` | Data source and dashboard provider |
-| `monitoring/grafana/dashboards/travelagency.json` | The overview dashboard |
+| File | What it is |
+|------|------------|
+| `k6/travelagency.js` | The test: user journey, test types, pass/fail goals (thresholds) |
+| `k6/run-k6.sh` | Runs k6 in Docker (`grafana/k6`) and pushes results to Prometheus |
+| `k6/seed-rooms.sql` | 240 test rooms. The seed data has hotels but **no rooms**, so search finds nothing to book |
+| `monitoring/grafana/dashboards/k6-load-test.json` | Grafana dashboard (added by `monitoring.yml` with the other dashboards) |
+| `monitoring/docker-compose.yml` | Prometheus gets `--web.enable-remote-write-receiver`, so k6 can push |
+| `k6/REPORT.md` | Results, bottleneck and scaling plan |
+
+## Test types
+
+| `TEST_TYPE` | Users (VUs) | Time | Question it answers |
+|-------------|-------------|------|---------------------|
+| `smoke` | 1 | 1 min | Does the script work? Run it first |
+| `load` | `VUS` (default 30) | 10 min | Is a normal busy day OK? |
+| `stress` | 20 → 50 → 100 → 150 | 24 min | Where does it break, and what breaks first? |
+| `spike` | 5 → 150 → 5 | 4.5 min | Does it survive a sudden crowd and recover? |
+
+Each virtual user is one customer with its own account (`k6user1`, `k6user2`, ...). The test makes
+the accounts itself in `setup()` through the normal sign-up form (`USERS`, default 200).
+Between pages a user "reads" for `THINK` seconds (default 1).
+
+Pass/fail goals (the run ends with exit code 99 if one fails):
+
+| Metric | Goal |
+|--------|------|
+| Failed HTTP requests | < 1% |
+| p95 of all requests | < 1.5 s |
+| p95 login / search / book | < 1.5 s / 2 s / 2 s |
+| k6 checks passed | > 99% |
 
 ## Run
 
-Once, on the **Proxmox host**: a read-only user and token for pve-exporter.
-
-```bash
-pveum user add monitoring@pve --comment "Prometheus read-only"
-pveum acl modify / --users monitoring@pve --roles PVEAuditor
-pveum user token add monitoring@pve prometheus --privsep 0   # copy the "value"
-```
+**1. Prometheus must accept remote write** (once). On the ansible host:
 
 ```bash
 cd ansible
-# add GRAFANA_ADMIN_PASSWORD, PVE_EXPORTER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID to .env
-set -a; source .env; set +a
-ansible-playbook provision.yml     # creates vm-monitor (existing containers are not changed)
-ansible-playbook monitoring.yml
+ansible-playbook monitoring.yml     # copies the new compose file and dashboard, recreates Prometheus
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://192.168.18.108:9090/api/v1/write   # 404 = flag missing, 400/415 = ready
 ```
 
-Open:
-
-- Grafana: `http://192.168.18.108:3000` (user `admin`, password from `GRAFANA_ADMIN_PASSWORD`)
-- Prometheus targets: `http://192.168.18.108:9090/targets`
-- Alertmanager: `http://192.168.18.108:9093`
-
-Tomcat is restarted once (to load the Java agent), **one node at a time** (`serial: 1`),
-so the site stays up behind the load balancer.
-
-## Telegram alerts
-
-Prometheus evaluates the rules in `prometheus/alerts.yml`. A firing alert goes to Alertmanager
-(`ansible/alertmanager.yml.j2`), which sends it to Telegram with the text from
-`alertmanager/telegram.tmpl`.
-
-| Setting | Value | Why |
-|---|---|---|
-| `group_by` | `[alertname, instance]` | One message per problem and server |
-| `group_wait` | `30s` | Alerts that fire together come in one message |
-| `group_interval` | `5m` | New alerts in an open group at most every 5 min |
-| `repeat_interval` | `4h` | Reminder while it is still broken |
-| `send_resolved` | `true` | ✅ message when it is fixed |
-| inhibit rule | critical hides warnings of the same `instance` | No CPU/heap noise when a server is down |
-
-### Set up
-
-1. In Telegram open **@BotFather** → `/newbot` → name → username ending with `bot`.
-   BotFather returns the **bot token** (`123456789:AA...`). Keep it secret.
-2. Open the new bot and press **Start**, otherwise it cannot write to you.
-3. Get your **chat id**: open `https://api.telegram.org/bot<TOKEN>/getUpdates` and take
-   `"chat":{"id":...}` from your message. A group id starts with `-100`.
-4. Check that the bot can write to you:
-
-   ```bash
-   curl -s "https://api.telegram.org/bot<TOKEN>/sendMessage" -d chat_id=<CHAT_ID> -d text="test"
-   ```
-
-5. Add both values to `ansible/.env` and run the playbook:
-
-   ```bash
-   TELEGRAM_BOT_TOKEN=123456789:AA...
-   TELEGRAM_CHAT_ID=123456789
-   ```
-
-   ```bash
-   cd ansible
-   set -a; source .env; set +a
-   ansible-playbook monitoring.yml
-   ```
-
-   Ansible writes `/opt/monitoring/alertmanager/alertmanager.yml` on `vm-monitor`
-   (mode `0640`, group `65534`: it holds the token) and reloads Prometheus and Alertmanager.
-
-### Test
+**2. Add test rooms** (once). On vm-db:
 
 ```bash
-# a test alert straight to Alertmanager (on vm-monitor, in /opt/monitoring)
-docker compose exec alertmanager amtool --alertmanager.url=http://localhost:9093 \
-  alert add TestAlert severity=critical instance=test --annotation='summary="test from amtool"'
-
-# a real one: keep a node down for 3 minutes (1 min "for:" + 30 s group_wait)
-ssh root@192.168.18.105 systemctl stop tomcat9
-ssh root@192.168.18.105 systemctl start tomcat9
+mysql -u root -p travelagency < seed-rooms.sql
+mysql -u root -p travelagency -e "SELECT COUNT(*) FROM Room"    # 240
 ```
 
-Telegram gets 🔴 `TargetDown` / `SiteDown` for `vm-app2`, then ✅ resolved.
-
-### Troubleshooting
-
-| Check | Command (on `vm-monitor`) |
-|---|---|
-| Prometheus knows Alertmanager | `curl -s localhost:9090/api/v1/alertmanagers` (not empty) |
-| Alertmanager got the alert | `http://192.168.18.108:9093` |
-| Alertmanager sent it | `curl -s localhost:9093/metrics \| grep 'notifications_total{integration="telegram"}'` |
-| Why it failed | `docker compose logs alertmanager \| grep -i -E 'telegram\|notify\|error'` |
-
-## Screenshots
-
-![Grafana: TravelAgency overview](images/grafana-dashboard.png)
-
-![Telegram alerts](images/telegram-alerts.png)
-
-## Check
+**3. Run k6** from a machine that is **not** one of the tested servers (ansible host, your PC
+or vm-agent) and has Docker. Otherwise k6 uses the CPU of the server it measures.
 
 ```bash
-curl -s http://192.168.18.101:9404/metrics | grep tomcat_requestcount_total   # JVM + Tomcat
-curl -s http://192.168.18.102:9104/metrics | grep '^mysql_up'                 # mysql_up 1
-curl -s http://192.168.18.106:9100/metrics | grep -c '^node_'                 # many lines
+TEST_TYPE=smoke  ./k6/run-k6.sh     # first: everything green?
+TEST_TYPE=load   ./k6/run-k6.sh
+TEST_TYPE=stress ./k6/run-k6.sh
 ```
 
-- Prometheus → Status → Targets: every target is **UP**.
-- Grafana → Dashboards → TravelAgency → **TravelAgency overview**: all panels have data.
-- `systemctl stop tomcat9` on `vm-app2`: after 1 minute **App nodes up** is `1`, alerts
-  `TargetDown` and `SiteDown` are firing, **Site (load balancer)** is still **UP**, and
-  Telegram gets 🔴 messages; after `systemctl start tomcat9` it gets ✅ resolved.
-- A second run of `monitoring.yml` shows no Tomcat restart.
+The script prints a Grafana link for this run. Settings (environment variables):
 
-## Tool versions
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `BASE_URL` | `http://192.168.18.106` | nginx on vm-lb |
+| `PROMETHEUS` | `http://192.168.18.108:9090` | where to push results |
+| `GRAFANA` | `http://192.168.18.108:3000` | only for the printed link |
+| `TESTID` | `<type>-<date>-<time>` | name of the run in Grafana (`Test run` list) |
+| `VUS` | `30` | users for `load` |
+| `USERS` | `200` | test accounts (≥ max users) |
+| `THINK` | `1` | seconds between pages |
+| `USER_PREFIX`, `K6_USER_PASSWORD` | `k6user`, `K6load123` | test accounts |
 
-| Tool | Version |
-|---|---|
-| Prometheus | `prom/prometheus:v3.15.1` |
-| Alertmanager | `prom/alertmanager:v0.34.1` |
-| Grafana | `grafana/grafana:13.2.5` |
-| Blackbox exporter | `prom/blackbox-exporter:v0.29.1` |
-| redis_exporter | `oliver006/redis_exporter:v1.95.0` |
-| Proxmox VE exporter | `prompve/prometheus-pve-exporter:3.10.1` |
-| JMX exporter (Java agent) | 1.0.1 |
-| node_exporter | 1.3.1 (Ubuntu 22.04 package) |
-| mysqld_exporter | 0.13.0 (Ubuntu 22.04 package) |
-| Docker / Compose | `docker.io` + `docker-compose-v2` (Ubuntu 22.04 packages) |
+Without Docker: install k6 and run the same thing by hand:
+
+```bash
+K6_PROMETHEUS_RW_SERVER_URL=http://192.168.18.108:9090/api/v1/write \
+K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \
+BASE_URL=http://192.168.18.106 TEST_TYPE=smoke \
+k6 run -o experimental-prometheus-rw --tag testid=smoke-1 k6/travelagency.js
+```
+
+The summary of every run is also saved to `k6/results/<testid>.json`.
+
+## Read the dashboard
+
+Every server panel also shows the number of users as a dashed line, so you see what happens
+to the servers when users go up.
+
+1. **Requests/s stops growing while users grow** → the system is full. Note the number of users
+   at that moment: that is the capacity.
+2. **At the same moment**, find the first resource at its limit:
+   - CPU of `vm-app*` near 100% → app nodes (add a node, more CPU)
+   - busy Tomcat threads = max → threads wait for something slower (usually the DB)
+   - `vm-db` CPU high, many running MySQL queries → database
+   - heap near 100%, GC time high → JVM memory
+   - `vm-lb` CPU high → nginx (unlikely)
+3. **Errors/s** and HTTP codes: 502/504 from nginx = Tomcat is too slow or down.
+
+## Clean up after tests
+
+The test leaves accounts `k6user*` and their bookings. On vm-db:
+
+```sql
+-- Room.booking_id points to the booking, so first free the rooms:
+UPDATE Room r JOIN Booking b ON r.booking_id = b.bookingId JOIN User u ON b.user_id = u.userId
+   SET r.booking_id = NULL WHERE u.login LIKE 'k6user%';
+DELETE b FROM Booking b JOIN User u ON b.user_id = u.userId WHERE u.login LIKE 'k6user%';
+DELETE FROM User WHERE login LIKE 'k6user%';
+```
+
+Run the test on a test copy of the data, not on real customers.

@@ -71,3 +71,7 @@ test-results/
 # General
 HELP.md
 .env
+
+
+# k6 run summaries
+k6/results/

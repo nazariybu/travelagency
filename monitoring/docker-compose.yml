@@ -12,6 +12,7 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
       - --web.enable-lifecycle          # allows reload: curl -X POST localhost:9090/-/reload
+      - --web.enable-remote-write-receiver   # k6 pushes load test results to /api/v1/write      
     volumes:
       - ./prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
