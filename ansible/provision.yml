@@ -17,6 +17,20 @@
       - { vmid: 309, name: vm-monitor, ip: 192.168.18.108, cores: 2, memory: 2048, disk: 16, features: [nesting=1] }
       - { vmid: 310, name: vm-vault,   ip: 192.168.18.109, memory: 512 }      
   tasks:
+    # The Proxmox token (secret) comes from Vault (vault_proxmox in group_vars/all.yml).
+    # Only for the very first run, when vm-vault does not exist yet: if PROXMOX_TOKEN_SECRET is set
+    # in the terminal (old .env), it is used and Vault is not asked (the second task is skipped).
+    - name: Take the Proxmox token from the terminal (only if PROXMOX_TOKEN_SECRET is set)
+      ansible.builtin.set_fact:
+        proxmox_token: "{{ lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') }}"
+      no_log: true
+
+    - name: Take the Proxmox token from Vault
+      ansible.builtin.set_fact:
+        proxmox_token: "{{ vault_proxmox.token_secret }}"
+      when: proxmox_token | length == 0
+      no_log: true
+
     - name: Create container
       community.proxmox.proxmox:
         api_host: 192.168.18.200        # IP вашого Proxmox
