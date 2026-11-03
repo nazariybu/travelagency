@@ -1,121 +1,50 @@
-# Central logging with Loki
+# Report: central logging with Loki
 
-Logs of all servers in one place. **Grafana Alloy** on every server reads the logs and pushes them to
-**Loki** on vm-monitor. **Grafana** shows them next to the metrics (same time axis, same `instance` names).
+## 1. Goal
 
-Before: to find an error you had to `ssh` to vm-app, then to vm-app2, then to vm-lb and `grep` there.
-Now: one search in Grafana over all servers.
+Collect the logs of the app nodes and the load balancer in one place, search them in Grafana next to
+the metrics, and get a Telegram message when the logs show errors. Stage: "Logging".
 
-```mermaid
-flowchart LR
-  subgraph px["Proxmox host 192.168.18.200 (LXC containers)"]
-    subgraph lb["vm-lb · .106"]
-      nginx["⚖️ nginx<br/>JSON access log + error.log"]
-      al1["🪵 Alloy"]
-    end
+## 2. Choices
 
-    subgraph app["App nodes · vm-app .101, vm-app2 .105"]
-      tc["☕ Tomcat 9 + app (logback)<br/>stdout → systemd journal"]
-      al2["🪵 Alloy<br/>drops Hibernate SQL,<br/>glues stack traces"]
-    end
+| Need | Option | Plus | Minus |
+|------|--------|------|-------|
+| Log storage | **Loki** ✅ | Same Grafana as metrics, indexes only labels → little RAM and disk, LogQL looks like PromQL | Full-text search is slower than in Elasticsearch on big volumes |
+| | ELK (Elasticsearch + Logstash + Kibana) | Powerful full-text search | Java, needs 4+ GB RAM only for Elasticsearch, one more UI |
+| | Graylog | Good UI for logs | Needs MongoDB + OpenSearch |
+| Log shipper | **Grafana Alloy** ✅ | Successor of Promtail, one agent for logs (and later metrics/traces), UI with the pipeline graph | New config language (Alloy syntax) |
+| | Promtail | Simple YAML | End of life since 2 March 2026, no new versions |
+| | Fluent Bit | Very light, many outputs | Separate project, no Grafana UI |
+| Where Loki runs | **Docker Compose on vm-monitor** ✅ | Next to Grafana and Alertmanager, deployed by the same `monitoring.yml` | One server for all monitoring (no HA) |
+| Storage | **Local disk (filesystem)** ✅ | Nothing else to run | Not for many servers; S3/MinIO for that |
+| Tomcat logs | **systemd journal** ✅ | Ubuntu's Tomcat 9 already sends stdout/stderr there, nothing to configure in Tomcat | `catalina.out` has the same lines, so we read only one of them |
+| nginx log format | **JSON** ✅ | Fields (status, upstream, request_time) without regex | Line is longer than `combined` |
 
-    subgraph mon["vm-monitor · .108 (Docker Compose)"]
-      loki[("📚 Loki :3100<br/>7 days")]
-      prom["📈 Prometheus :9090"]
-      am["🔔 Alertmanager :9093"]
-      graf["📊 Grafana :3000<br/>TravelAgency logs"]
-    end
-  end
+## 3. Design
 
-  tg["📱 Telegram"]
+- Labels: `job` (tomcat / nginx), `type` (access / error), `instance` (vm-app, vm-app2, vm-lb).
+  `instance` has the same values as in Prometheus, so a log line and a metric of the same server match.
+  Status, URL, user are **not** labels (many values = many streams = slow Loki); they are parsed at query time.
+- Retention: 7 days (`limits_config.retention_period`, the compactor deletes old chunks). Prometheus keeps 15 days.
+- Noise: `hibernate.show_sql=true` prints every SQL query to stdout (~300 lines per HTTP request in the
+  k6 test). Alloy drops them (`stage.drop`), the counter `loki_process_dropped_lines_total` shows how many.
+- Stack traces: one Java error is 20–100 lines. Alloy glues them into one entry (`stage.multiline`):
+  a new entry starts with a date (`2026-11-03 10:00:00` from logback or `03-Nov-2026 10:00:00` from Tomcat).
+- App logging: `pom.xml` had two SLF4J bindings (`slf4j-nop` and `logback-classic`). SLF4J uses the one it
+  finds first, and the order is not defined: either all app logs disappear (nop) or logback writes everything at DEBUG. Removed `slf4j-nop`,
+  added `logback.xml`: INFO for `org.project`, WARN for libraries, the line starts with date and level.
+- Is the shipper alive? Prometheus scrapes Alloy (`job="alloy"`, port 12345) and Loki (`job="loki"`).
+  The existing `TargetDown` alert covers them.
 
-  nginx -. files .-> al1
-  tc -. journal .-> al2
-  al1 & al2 -- "push /loki/api/v1/push" --> loki
-  loki --> graf
-  prom --> graf
-  loki -- "log alerts (ruler)" --> am
-  prom -- "metric alerts" --> am
-  am --> tg
-  prom -. "scrape :12345 (is Alloy alive?)" .-> al1 & al2
+## 4. Found in the logs
 
-  classDef logs fill:#fde68a,stroke:#b45309,color:#000
-  classDef obs fill:#bbf7d0,stroke:#15803d,color:#000
-  class al1,al2,loki logs
-  class prom,graf,am obs
-```
+First look on 03.11, during a k6 run (dashboard **TravelAgency logs**, last 1 hour).
 
-## What is collected
-
-| Server | Source | Labels in Loki | What you find there |
-|--------|--------|----------------|---------------------|
-| vm-app, vm-app2 | systemd journal of `tomcat9.service` | `job="tomcat"`, `instance` | Tomcat start/stop, our logs (`logback`), Java errors with stack traces |
-| vm-lb | `/var/log/nginx/travelagency_access.log` (JSON) | `job="nginx"`, `type="access"`, `instance` | Every request: status, URL, which app node answered, time |
-| vm-lb | `/var/log/nginx/error.log` | `job="nginx"`, `type="error"`, `instance` | `connect() failed`, `upstream timed out` (an app node is down or slow) |
-
-Not sent: `Hibernate: select ...` lines (`hibernate.show_sql=true` prints ~300 per page). Alloy drops them;
-how many is in Prometheus: `loki_process_dropped_lines_total{reason="hibernate_sql"}`.
-
-Few labels on purpose: Loki indexes **only labels**, not the text. A label with many values
-(URL, user, status) makes many small streams and Loki gets slow. Everything else is parsed at query time
-(`| json`, `|=`, `|~`).
-
-## Files
-
-| File | What it is |
-|------|------------|
-| `monitoring/loki/loki.yml` | Loki config: one process, files on disk, retention 7 days, ruler → Alertmanager |
-| `monitoring/loki/rules/fake/alerts.yml` | Alerts on logs (LogQL). `fake` = tenant name when auth is off |
-| `monitoring/docker-compose.yml` | New service `loki` (`grafana/loki:3.7.9`), volume `loki-data` |
-| `monitoring/grafana/provisioning/datasources/loki.yml` | Grafana data source "Loki" |
-| `monitoring/grafana/dashboards/travelagency-logs.json` | Dashboard **TravelAgency logs** |
-| `ansible/logging.yml` | Installs Grafana Alloy on `app` and `lb` hosts |
-| `ansible/config.alloy.j2` | Alloy config: what to read, filters, where to push |
-| `ansible/nginx-lb.conf.j2` | nginx writes a JSON access log (`log_format travelagency_json`) |
-| `ansible/prometheus.yml.j2` | New scrape jobs `loki` and `alloy` (TargetDown if a log shipper dies) |
-| `ansible/monitoring.yml` | Restarts Loki and Grafana when their files change, waits for Loki |
-| `ansible/group_vars/all.yml` | `loki_host`, `loki_port`, `alloy_port`; `app_version: logging-loki` |
-| `src/main/resources/logback.xml` | App log format and levels (INFO for our code, WARN for libraries) |
-| `pom.xml` | Removed `slf4j-nop`: it was a second SLF4J binding that could swallow all app logs |
-
-## Run
-
-On the ansible host, in `ansible/`:
-
-```bash
-set -a; source .env; set +a
-ansible-playbook monitoring.yml   # starts Loki, adds the data source and the dashboard
-curl -s http://192.168.18.108:3100/ready          # ready
-ansible-playbook lb.yml           # nginx JSON access log
-ansible-playbook app.yml          # builds this branch: logback.xml, no slf4j-nop
-ansible-playbook logging.yml      # Alloy on vm-app, vm-app2, vm-lb
-```
-
-Check: Prometheus → Targets: `loki` and `alloy` are UP. Alloy UI: `http://<server>:12345`.
-
-## Search (Grafana → Explore → Loki)
-
-| Question | LogQL |
-|----------|-------|
-| All app logs of vm-app | `{job="tomcat", instance="vm-app"}` |
-| Errors on all nodes | `{job="tomcat"} \|~ " (ERROR\|SEVERE) \|Exception"` |
-| Failed logins | `{job="tomcat"} \|= "failed login"` |
-| 5xx through the load balancer | `{job="nginx", type="access"} \| json \| status >= 500` |
-| Slow requests (> 1 s) | `{job="nginx", type="access"} \| json \| request_time > 1` |
-| Requests per node, per minute | `sum by (upstream) (count_over_time({job="nginx", type="access"} \| json [1m]))` |
-| p95 time per node | `quantile_over_time(0.95, {job="nginx", type="access"} \| json \| unwrap request_time [5m]) by (upstream)` |
-
-`|=` contains text, `|~` matches a regex, `| json` turns JSON fields into labels for this query only.
-
-## Alerts on logs
-
-Loki checks the rules every minute and sends firing alerts to the same Alertmanager → Telegram.
-
-| Alert | When |
-|-------|------|
-| `Nginx5xxErrors` | more than 10 responses 5xx in 5 min (for 2 min) |
-| `AppErrorsInLogs` | more than 5 `ERROR`/`SEVERE` lines in 5 min on one node (for 2 min) |
-
-Also `TargetDown` from Prometheus now covers `loki` and `alloy`: if Alloy stops, logs stop and you get a message.
-
-Details, choices and results: [REPORT.md](REPORT.md).
+| # | What | Where (LogQL) | Meaning |
+|---|------|---------------|---------|
+| 1 | **HTTP 500 on sign-up of existing users.** k6 `setup()` registers `k6user1..200` again, they are already in the DB from earlier runs. The app logs `SqlExceptionHelper - Duplicate entry 'k6user200@k6.test' for key 'User.uk_user_email'` (SQLState 23000) and `GlobalExceptionHandler - Exception raised = could not execute statement :: URL = .../create`, and nginx returns **500** | `{job="tomcat"} \|= "Duplicate entry"`, panel "Requests by HTTP status" (orange 500 bars) | A bug: sign-up must check if the login/email exists and show a form error, not a 500. k6 ignores the sign-up result, so only the logs showed it |
+| 2 | **Hibernate SQL noise:** up to **~20 000** `Hibernate: ...` lines per second on the app nodes during the test, all dropped by Alloy | Prometheus: `sum by (instance) (rate(loki_process_dropped_lines_total{reason="hibernate_sql"}[1m]))` | Same as problem #4 of the k6 report (`show_sql: true`). Without the filter this would be ~99% of all log lines in Loki |
+| 3 | **Round-robin works:** requests are split about equally between `192.168.18.101:8080` (vm-app) and `192.168.18.105:8080` (vm-app2) | `sum by (upstream) (count_over_time({job="nginx", type="access"} \| json [1m]))` | The `ip_hash` problem from the first k6 run would be visible here at once |
+| 4 | **Slow requests:** p95 up to ~4 s per node, single `POST /form-login` and `POST /hotel/book` take 4–5 s | panel "p95 response time per app node", `{job="nginx", type="access"} \| json \| request_time > 1` | Confirms the k6 result (p95 far above the 1.5 s goal), now per request and per node |
+| 5 | **HTTP 499:** the client closed the connection before the answer (k6 request timeout) | `{job="nginx", type="access"} \| json \| status = 499` | Requests so slow that the client gave up; nginx logs them, Tomcat does not |
+| 6 | Log alert `Nginx5xxErrors` (Tomcat stopped on both nodes) | `{job="nginx", type="error"}` | |
