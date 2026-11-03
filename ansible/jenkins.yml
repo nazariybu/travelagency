@@ -90,11 +90,12 @@
         state: present
         update_cache: true
 
-    - name: Install Ansible and proxmoxer with pip (apt versions are too old)
+    - name: Install Ansible, proxmoxer and hvac with pip (apt versions are too old)
       ansible.builtin.pip:
         name:
           - "ansible-core>=2.15,<2.18"
           - "proxmoxer>=2.3"
+          - "hvac>=2.1"          # Python client for Vault, the hashi_vault lookups need it
 
     - name: Create the jenkins user and add it to the docker group
       ansible.builtin.user:
@@ -119,6 +120,13 @@
       args:
         creates: "{{ jenkins_agent_home }}/.ansible/collections/ansible_collections/community/mysql"
 
+    # Separate task: the task above is skipped when community.mysql is already there
+    - name: Install the Vault collection for the jenkins user
+      ansible.builtin.command: ansible-galaxy collection install "community.hashi_vault:>=6.2.0,<7.0.0"
+      become_user: "{{ jenkins_agent_user }}"
+      args:
+        creates: "{{ jenkins_agent_home }}/.ansible/collections/ansible_collections/community/hashi_vault"
+        
 # ============================================================
 # Play 4: let the agent deploy to the app and db servers
 # ============================================================

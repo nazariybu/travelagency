@@ -4,4 +4,5 @@ collections:
   - name: community.proxmox   # create VMs in Proxmox (provision.yml)
   - name: community.docker    # run Jenkins in Docker (jenkins.yml)
   - name: ansible.posix       # SSH keys (jenkins.yml)
-  
+  - name: community.hashi_vault   # read secrets from HashiCorp Vault (group_vars/all.yml)
+    version: ">=6.2.0,<7.0.0"  

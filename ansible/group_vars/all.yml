@@ -1,15 +1,16 @@
-# Settings for app.yml. Change them here, not in the playbook.
+# Settings for all playbooks. Change them here, not in the playbooks.
+# Secrets are NOT here and NOT in .env: they live in HashiCorp Vault (see the "Vault" part at the end).
 
 # --- Database ---
 db_name: travelagency
 db_user: travel
-db_password: "{{ lookup('ansible.builtin.env', 'DB_PASSWORD') }}"  # secret: comes from .env, not stored in Git
+db_password: "{{ vault_app.db_password }}"   # secret: from Vault, secret/travelagency/app
 db_allowed_hosts: "192.168.18.%"  # who can connect to MySQL
 db_host: "{{ hostvars[groups['db'][0]].ansible_host }}"  # IP of the first db server
 
 # --- Application ---
 app_repo: https://github.com/nazariybu/travelagency
-app_version: logging-loki   # this branch: has logback.xml (app logs for Loki). Was: load-balancing-redis
+app_version: secrets-vault  # this branch. Same app code as logging-loki (logback.xml)
 app_src_dir: /opt/travelagency
 java_home: /usr/lib/jvm/java-17-openjdk-amd64
 tomcat_webapps: /var/lib/tomcat9/webapps
@@ -28,23 +29,39 @@ smee_url: https://smee.io/a7ClmtoMJzqcfNMS
 # --- Redis (shared HTTP sessions) ---
 redis_host: "{{ hostvars[groups['redis'][0]].ansible_host }}"
 redis_port: 6379
-redis_password: "{{ lookup('ansible.builtin.env', 'REDIS_PASSWORD') }}"  # secret: comes from .env
+redis_password: "{{ vault_app.redis_password }}"   # secret: from Vault, secret/travelagency/app
 
 # --- Monitoring (monitoring.yml) ---
 monitoring_dir: /opt/monitoring          # compose project on vm-monitor
 prometheus_retention: 15d                # how long Prometheus keeps metrics
-grafana_admin_password: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_PASSWORD') }}"  # secret: comes from .env
+grafana_admin_password: "{{ vault_monitoring.grafana_admin_password }}"  # secret: from Vault
 jmx_exporter_version: 1.0.1
 jmx_exporter_port: 9404                  # Tomcat JVM metrics on every app node
 proxmox_host: 192.168.18.200             # Proxmox API for pve-exporter (CPU of every LXC)
 pve_exporter_user: monitoring@pve        # read-only user (role PVEAuditor)
 pve_exporter_token_name: prometheus
-pve_exporter_token: "{{ lookup('ansible.builtin.env', 'PVE_EXPORTER_TOKEN') }}"  # secret: comes from .env
-telegram_bot_token: "{{ lookup('ansible.builtin.env', 'TELEGRAM_BOT_TOKEN') }}"  # secret: from @BotFather, comes from .env
-telegram_chat_id: "{{ lookup('ansible.builtin.env', 'TELEGRAM_CHAT_ID') }}"      # your chat id (a number), comes from .env
-
+pve_exporter_token: "{{ vault_monitoring.pve_exporter_token }}"  # secret: from Vault
+telegram_bot_token: "{{ vault_monitoring.telegram_bot_token }}"  # secret: from @BotFather, stored in Vault
+telegram_chat_id: "{{ vault_monitoring.telegram_chat_id }}"      # your chat id (a number), stored in Vault
 
 # --- Logging (logging.yml) ---
 loki_host: "{{ hostvars[groups['monitoring'][0]].ansible_host }}"   # Loki runs in the monitoring compose on vm-monitor
 loki_port: 3100
 alloy_port: 12345                        # Alloy UI and its own metrics on every server that sends logs
+
+
+# --- Vault (vault.yml + all secrets) ---
+vault_host: "{{ hostvars[groups['vault'][0]].ansible_host }}"
+vault_port: 8200
+vault_url: "http://{{ vault_host }}:{{ vault_port }}"   # no TLS: home lab only, see REPORT.md
+vault_kv_mount: secret                                  # KV version 2 secrets engine
+
+# Each line below asks Vault for one secret "folder" and gives back all its keys.
+# Ansible asks only when a playbook really uses a variable (lazy), so Jenkins,
+# which may read only travelagency/app, never asks for the other folders.
+# Who logs in to Vault:
+#   on the ansible host: you,      "vault login -method=userpass username=nazariy" -> token in ~/.vault-token
+#   in Jenkins:          AppRole,  env ANSIBLE_HASHI_VAULT_AUTH_METHOD=approle + ROLE_ID + SECRET_ID (Jenkinsfile)
+vault_app: "{{ lookup('community.hashi_vault.vault_kv2_get', 'travelagency/app', engine_mount_point=vault_kv_mount, url=vault_url).secret }}"
+vault_monitoring: "{{ lookup('community.hashi_vault.vault_kv2_get', 'travelagency/monitoring', engine_mount_point=vault_kv_mount, url=vault_url).secret }}"
+vault_proxmox: "{{ lookup('community.hashi_vault.vault_kv2_get', 'travelagency/proxmox', engine_mount_point=vault_kv_mount, url=vault_url).secret }}"

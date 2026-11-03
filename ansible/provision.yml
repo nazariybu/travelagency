@@ -2,7 +2,10 @@
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_token: "{{ lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') }}"  # secret: comes from .env
+    # Secret. From Vault (vault_proxmox in group_vars/all.yml).
+    # Only for the very first run, when vm-vault does not exist yet: if PROXMOX_TOKEN_SECRET is set
+    # in the terminal (old .env), it is used and Vault is not asked.
+    proxmox_token: "{{ lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') if lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') else vault_proxmox.token_secret }}"
     containers:
       - { vmid: 301, name: vm-app,     ip: 192.168.18.101 }
       - { vmid: 302, name: vm-db,      ip: 192.168.18.102 }
@@ -12,6 +15,7 @@
       - { vmid: 303, name: vm-jenkins, ip: 192.168.18.103, cores: 1, memory: 2048, disk: 16, features: [nesting=1] }
       - { vmid: 304, name: vm-agent,   ip: 192.168.18.104, cores: 4, memory: 4096, disk: 32, features: [nesting=1] }      
       - { vmid: 309, name: vm-monitor, ip: 192.168.18.108, cores: 2, memory: 2048, disk: 16, features: [nesting=1] }
+      - { vmid: 310, name: vm-vault,   ip: 192.168.18.109, memory: 512 }      
   tasks:
     - name: Create container
       community.proxmox.proxmox:

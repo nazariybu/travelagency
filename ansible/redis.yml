@@ -1,3 +1,6 @@
+# Run:  vault login -method=userpass username=nazariy   (secrets come from Vault)
+#       ansible-playbook redis.yml
+
 - name: Set up Redis for shared HTTP sessions
   hosts: redis
   become: true
@@ -6,7 +9,7 @@
     - name: Stop if the Redis password is not set
       ansible.builtin.assert:
         that: redis_password | length > 0
-        fail_msg: "REDIS_PASSWORD is empty. Run:  set -a; source .env; set +a"
+        fail_msg: "redis_password in Vault (secret/travelagency/app) is empty"
         quiet: true
 
     - name: Install Redis

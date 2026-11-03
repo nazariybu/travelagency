@@ -67,10 +67,14 @@ pipeline {
         }
 
         stage('Deploy') {
-            when { branch 'load-balancing-redis' }       // deploy only from this branch           
+            when { anyOf { branch 'load-balancing-redis'; branch 'secrets-vault' } }   // deploy only from these branches
             environment {
-                DB_PASSWORD    = credentials('db-password')
-                REDIS_PASSWORD = credentials('redis-password')
+                // No passwords in Jenkins any more. Ansible logs in to Vault with AppRole
+                // and reads db_password / redis_password itself (group_vars/all.yml).
+                // The jenkins-deploy role may read only secret/travelagency/app, only from vm-agent.
+                ANSIBLE_HASHI_VAULT_AUTH_METHOD = 'approle'
+                ANSIBLE_HASHI_VAULT_ROLE_ID     = credentials('vault-role-id')
+                ANSIBLE_HASHI_VAULT_SECRET_ID   = credentials('vault-secret-id')
             }
             steps {
                 dir('ansible') {

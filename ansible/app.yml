@@ -1,11 +1,11 @@
 ---
-# Run:  set -a; source .env; set +a     (load secrets, once per terminal)
+# Run:  vault login -method=userpass username=nazariy   (once in 8 hours, secrets come from Vault)
 #       ansible-playbook app.yml
-# From Jenkins: ansible-playbook app.yml -e war_file=/path/to/TravelAgency.war
+# From Jenkins: ansible-playbook app.yml -e war_file=/path/to/TravelAgency.war  (Vault login with AppRole)
 
 
 # ============================================================
-# Play 0: check that the secrets from .env are loaded
+# Play 0: check that the secrets from Vault are there
 # ============================================================
 - name: Check settings
   hosts: localhost
@@ -16,13 +16,13 @@
     - name: Stop if the database password is not set
       ansible.builtin.assert:
         that: db_password | length > 0
-        fail_msg: "DB_PASSWORD is empty. Run:  set -a; source .env; set +a"
+        fail_msg: "db_password in Vault (secret/travelagency/app) is empty"
         quiet: true
 
     - name: Stop if the Redis password is not set
       ansible.builtin.assert:
         that: redis_password | length > 0
-        fail_msg: "REDIS_PASSWORD is empty. Run:  set -a; source .env; set +a"
+        fail_msg: "redis_password in Vault (secret/travelagency/app) is empty"
         quiet: true
 
 # ============================================================

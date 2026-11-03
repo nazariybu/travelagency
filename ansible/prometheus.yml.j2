@@ -103,6 +103,9 @@ scrape_configs:
       - targets: ["http://{{ hostvars[host].ansible_host }}:{{ app_port }}/form-login"]
         labels: { instance: "{{ host }}" }
 {% endfor %}
+      # Vault health: 200 only when it is unsealed. Sealed = 503 = SiteDown alert in Telegram
+      - targets: ["{{ vault_url }}/v1/sys/health"]
+        labels: { instance: "{{ groups['vault'][0] }}" }
     relabel_configs:
       # Send the URL to blackbox as ?target=..., keep it as the "url" label
       - source_labels: [__address__]

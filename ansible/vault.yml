@@ -1,0 +1,77 @@
+---
+# Installs HashiCorp Vault on vm-vault.
+# Run:  ansible-playbook vault.yml
+# Then, once, by hand: vault operator init + unseal + setup (README.md, "First start").
+# No secrets are needed to run this playbook.
+
+- name: Install HashiCorp Vault
+  hosts: vault
+  become: true
+
+  tasks:
+    - name: Create the folder for apt signing keys
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    # apt checks every HashiCorp package with this key, so nobody can slip in a fake one
+    - name: Download the HashiCorp signing key
+      ansible.builtin.get_url:
+        url: https://apt.releases.hashicorp.com/gpg
+        dest: /etc/apt/keyrings/hashicorp.asc
+        mode: "0644"
+
+    - name: Add the HashiCorp apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/hashicorp.asc] https://apt.releases.hashicorp.com {{ ansible_distribution_release }} main"
+        filename: hashicorp
+        state: present
+
+    # The package also creates the "vault" user, /opt/vault/data and the vault.service
+    - name: Install Vault
+      ansible.builtin.apt:
+        name: vault
+        state: present
+        update_cache: true
+
+    - name: Write the Vault config
+      ansible.builtin.template:
+        src: vault.hcl.j2
+        dest: /etc/vault.d/vault.hcl
+        owner: vault
+        group: vault
+        mode: "0640"
+      notify: Restart Vault
+
+    - name: Make sure Vault is running and starts on boot
+      ansible.builtin.systemd:
+        name: vault
+        state: started
+        enabled: true
+
+    - name: Restart Vault now if the config changed
+      ansible.builtin.meta: flush_handlers
+
+    # /v1/sys/health answers with a code that tells the state:
+    # 200 ready, 501 not initialized yet, 503 sealed (locked). All three mean "the process is up".
+    - name: Wait until Vault answers
+      ansible.builtin.uri:
+        url: "http://localhost:{{ vault_port }}/v1/sys/health"
+        status_code: [200, 429, 501, 503]
+      register: health
+      until: health.status in [200, 429, 501, 503]
+      retries: 12
+      delay: 5
+
+    - name: Show the state
+      ansible.builtin.debug:
+        msg:
+          - "Vault: {{ vault_url }}/ui"
+          - "{{ {200: 'Ready (unsealed).', 429: 'Ready (standby).', 501: 'Not initialized yet: run vault operator init (README.md).', 503: 'SEALED: run vault operator unseal two times (README.md).'}[health.status] }}"
+
+  handlers:
+    - name: Restart Vault
+      ansible.builtin.systemd:
+        name: vault
+        state: restarted

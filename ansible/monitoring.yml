@@ -1,12 +1,12 @@
 
 ---
-# Run:  set -a; source .env; set +a     (load secrets, once per terminal)
+# Run:  vault login -method=userpass username=nazariy   (once in 8 hours, secrets come from Vault)
 #       ansible-playbook monitoring.yml
-# Then: Grafana http://192.168.18.108:3000  (admin / GRAFANA_ADMIN_PASSWORD)
+# Then: Grafana http://192.168.18.108:3000  (admin / grafana_admin_password from Vault)
 
 
 # ============================================================
-# Play 0: check that the secrets from .env are loaded
+# Play 0: check that the secrets from Vault are there
 # ============================================================
 - name: Check settings
   hosts: localhost
@@ -22,7 +22,7 @@
           - pve_exporter_token | length > 0
           - telegram_bot_token | length > 0
           - telegram_chat_id | length > 0
-        fail_msg: "A secret is empty (GRAFANA_ADMIN_PASSWORD, REDIS_PASSWORD, PVE_EXPORTER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID). Run:  set -a; source .env; set +a"
+        fail_msg: "A secret in Vault is empty (secret/travelagency/app or secret/travelagency/monitoring)"
         quiet: true
 
 # ============================================================
@@ -278,7 +278,7 @@
     - name: Show where to open it
       ansible.builtin.debug:
         msg:
-          - "Grafana:    http://{{ ansible_host }}:3000  (admin / GRAFANA_ADMIN_PASSWORD)"
+          - "Grafana:    http://{{ ansible_host }}:3000  (admin / vault kv get -field=grafana_admin_password secret/travelagency/monitoring)"
           - "Prometheus: http://{{ ansible_host }}:9090/targets  (all targets must be UP)"
           - "Alertmanager: http://{{ ansible_host }}:9093  (alerts sent to Telegram)"
           - "Loki:       http://{{ ansible_host }}:3100/ready  (logs, read them in Grafana -> Explore -> Loki)"          

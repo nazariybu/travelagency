@@ -1,0 +1,21 @@
+# Managed by Ansible (vault.yml). Vault server config.
+# After a change Ansible restarts Vault, and a restarted Vault is SEALED: unseal it again (README.md).
+
+ui            = true    # web UI on http://{{ ansible_host }}:{{ vault_port }}/ui
+disable_mlock = true    # recommended with raft storage; an unprivileged LXC cannot lock memory anyway
+
+# Vault keeps its data (encrypted) on the local disk, in the built-in raft storage.
+# One node now; more nodes can join later for high availability.
+storage "raft" {
+  path    = "/opt/vault/data"
+  node_id = "{{ inventory_hostname }}"
+}
+
+listener "tcp" {
+  address     = "0.0.0.0:{{ vault_port }}"
+  tls_disable = true    # plain HTTP: only for the home lab network, see REPORT.md
+}
+
+# How other clients (and other Vault nodes) reach this server
+api_addr     = "http://{{ ansible_host }}:{{ vault_port }}"
+cluster_addr = "https://{{ ansible_host }}:8201"   # node-to-node port, always TLS inside Vault
