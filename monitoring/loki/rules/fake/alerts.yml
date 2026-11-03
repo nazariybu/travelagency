@@ -1,0 +1,26 @@
+# Alert rules on logs. Loki checks them every minute (LogQL instead of PromQL).
+# Folder "fake" = tenant name when auth_enabled: false. Alerts go to Alertmanager -> Telegram.
+groups:
+  - name: logs
+    rules:
+      # nginx answered 5xx: Tomcat is down or too slow on all nodes (502/504) or the app failed (500)
+      - alert: Nginx5xxErrors
+        expr: |
+          sum by (instance) (
+            count_over_time({job="nginx", type="access"} | json | __error__="" | status >= 500 [5m])
+          ) > 10
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "nginx returned {{ $value | printf \"%.0f\" }} errors 5xx in 5 minutes"
+
+      # ERROR from our code (logback) or SEVERE from Tomcat itself
+      - alert: AppErrorsInLogs
+        expr: |
+          sum by (instance) (
+            count_over_time({job="tomcat"} |~ " (ERROR|SEVERE) " [5m])
+          ) > 5
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | printf \"%.0f\" }} ERROR/SEVERE lines in the Tomcat log in 5 minutes"

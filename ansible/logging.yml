@@ -1,0 +1,105 @@
+---
+# Central logging: Grafana Alloy on the app nodes and the load balancer sends logs to Loki on vm-monitor.
+# Run (after monitoring.yml, it starts Loki):
+#       ansible-playbook logging.yml
+# Then: Grafana http://192.168.18.108:3000 -> Explore -> Loki, or dashboard "TravelAgency logs"
+
+
+# ============================================================
+# Play 0: Loki must already run (ansible-playbook monitoring.yml)
+# ============================================================
+- name: Check that Loki is ready
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Ask Loki /ready
+      ansible.builtin.uri:
+        url: "http://{{ loki_host }}:{{ loki_port }}/ready"
+        status_code: 200
+      register: loki
+      until: loki.status == 200
+      retries: 6
+      delay: 5
+
+# ============================================================
+# Play 1: Grafana Alloy on every server whose logs we want
+# ============================================================
+- name: Install Grafana Alloy (log shipper)
+  hosts: app:lb
+  become: true
+
+  tasks:
+    - name: Create the folder for apt keys
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download the Grafana apt key (checks that packages really come from Grafana)
+      ansible.builtin.get_url:
+        url: https://apt.grafana.com/gpg.key
+        dest: /etc/apt/keyrings/grafana.asc
+        mode: "0644"
+
+    - name: Add the Grafana apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main"
+        filename: grafana
+        state: present
+
+    - name: Install Alloy
+      ansible.builtin.apt:
+        name: alloy
+        state: present
+        update_cache: true
+
+    # adm: can read /var/log/nginx/*.log   systemd-journal: can read journalctl (Tomcat logs)
+    - name: Let Alloy read the logs
+      ansible.builtin.user:
+        name: alloy
+        groups: [adm, systemd-journal]
+        append: true
+      notify: Restart Alloy
+
+    # By default the UI and metrics listen only on 127.0.0.1. Open them for Prometheus (job "alloy")
+    - name: Open the Alloy UI and metrics on port {{ alloy_port }}
+      ansible.builtin.lineinfile:
+        path: /etc/default/alloy
+        regexp: '^CUSTOM_ARGS='
+        line: 'CUSTOM_ARGS="--server.http.listen-addr=0.0.0.0:{{ alloy_port }}"'
+      notify: Restart Alloy
+
+    # validate: "alloy fmt" checks the syntax first. A broken config is never copied
+    - name: Copy the Alloy config (what to read, where to send)
+      ansible.builtin.template:
+        src: config.alloy.j2
+        dest: /etc/alloy/config.alloy
+        mode: "0644"
+        validate: alloy fmt %s
+      notify: Restart Alloy
+
+    - name: Make sure Alloy is running and starts on boot
+      ansible.builtin.systemd:
+        name: alloy
+        state: started
+        enabled: true
+
+    - name: Restart Alloy now if something changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait until Alloy is ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ alloy_port }}/-/ready"
+        status_code: 200
+      register: alloy
+      until: alloy.status == 200
+      retries: 12
+      delay: 5
+
+  handlers:
+    - name: Restart Alloy
+      ansible.builtin.systemd:
+        name: alloy
+        state: restarted

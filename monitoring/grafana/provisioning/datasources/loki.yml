@@ -1,0 +1,12 @@
+# Grafana gets Loki (logs) as a second data source on start, no clicks needed
+apiVersion: 1
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100   # service name from docker-compose.yml
+    editable: false
+    jsonData:
+      maxLines: 1000        # max log lines in one query result
+

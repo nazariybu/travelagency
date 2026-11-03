@@ -1,156 +1,121 @@
-# Load test with k6
+# Central logging with Loki
 
-k6 plays real customers: **log in → open hotels → search free rooms → book → my bookings → log out**,
-all through nginx on vm-lb. Results go to Prometheus (remote write) and are shown in Grafana
-on the dashboard **TravelAgency load test (k6)**, next to CPU, Tomcat threads, JVM heap and MySQL.
+Logs of all servers in one place. **Grafana Alloy** on every server reads the logs and pushes them to
+**Loki** on vm-monitor. **Grafana** shows them next to the metrics (same time axis, same `instance` names).
+
+Before: to find an error you had to `ssh` to vm-app, then to vm-app2, then to vm-lb and `grep` there.
+Now: one search in Grafana over all servers.
 
 ```mermaid
 flowchart LR
-  k6["🧪 k6<br/>ansible host / PC / vm-agent"]
-
   subgraph px["Proxmox host 192.168.18.200 (LXC containers)"]
-    lb["⚖️ nginx load balancer<br/>vm-lb · .106:80"]
-
-    subgraph app["App nodes · Tomcat 9"]
-      a1["☕ vm-app<br/>.101:8080"]
-      a2["☕ vm-app2<br/>.105:8080"]
+    subgraph lb["vm-lb · .106"]
+      nginx["⚖️ nginx<br/>JSON access log + error.log"]
+      al1["🪵 Alloy"]
     end
 
-    db[("🐬 MySQL 8<br/>vm-db · .102")]
-    redis[("🔴 Redis · sessions<br/>vm-redis · .107")]
+    subgraph app["App nodes · vm-app .101, vm-app2 .105"]
+      tc["☕ Tomcat 9 + app (logback)<br/>stdout → systemd journal"]
+      al2["🪵 Alloy<br/>drops Hibernate SQL,<br/>glues stack traces"]
+    end
 
-    subgraph mon["vm-monitor · .108"]
+    subgraph mon["vm-monitor · .108 (Docker Compose)"]
+      loki[("📚 Loki :3100<br/>7 days")]
       prom["📈 Prometheus :9090"]
-      graf["📊 Grafana :3000<br/>TravelAgency load test (k6)"]
+      am["🔔 Alertmanager :9093"]
+      graf["📊 Grafana :3000<br/>TravelAgency logs"]
     end
   end
 
-  k6 -- "HTTP: login → search → book → logout" --> lb
-  lb --> a1 & a2
-  a1 & a2 --> db
-  a1 & a2 --> redis
-  k6 -. "remote write /api/v1/write" .-> prom
-  prom -. "scrape exporters" .-> lb & a1 & a2 & db & redis
-  prom --> graf
+  tg["📱 Telegram"]
 
-  classDef load fill:#fde68a,stroke:#b45309,color:#000
-  classDef data fill:#bfdbfe,stroke:#1d4ed8,color:#000
+  nginx -. files .-> al1
+  tc -. journal .-> al2
+  al1 & al2 -- "push /loki/api/v1/push" --> loki
+  loki --> graf
+  prom --> graf
+  loki -- "log alerts (ruler)" --> am
+  prom -- "metric alerts" --> am
+  am --> tg
+  prom -. "scrape :12345 (is Alloy alive?)" .-> al1 & al2
+
+  classDef logs fill:#fde68a,stroke:#b45309,color:#000
   classDef obs fill:#bbf7d0,stroke:#15803d,color:#000
-  class k6 load
-  class db,redis data
-  class prom,graf obs
+  class al1,al2,loki logs
+  class prom,graf,am obs
 ```
 
-Solid lines = user traffic, dotted lines = metrics.
+## What is collected
+
+| Server | Source | Labels in Loki | What you find there |
+|--------|--------|----------------|---------------------|
+| vm-app, vm-app2 | systemd journal of `tomcat9.service` | `job="tomcat"`, `instance` | Tomcat start/stop, our logs (`logback`), Java errors with stack traces |
+| vm-lb | `/var/log/nginx/travelagency_access.log` (JSON) | `job="nginx"`, `type="access"`, `instance` | Every request: status, URL, which app node answered, time |
+| vm-lb | `/var/log/nginx/error.log` | `job="nginx"`, `type="error"`, `instance` | `connect() failed`, `upstream timed out` (an app node is down or slow) |
+
+Not sent: `Hibernate: select ...` lines (`hibernate.show_sql=true` prints ~300 per page). Alloy drops them;
+how many is in Prometheus: `loki_process_dropped_lines_total{reason="hibernate_sql"}`.
+
+Few labels on purpose: Loki indexes **only labels**, not the text. A label with many values
+(URL, user, status) makes many small streams and Loki gets slow. Everything else is parsed at query time
+(`| json`, `|=`, `|~`).
 
 ## Files
 
 | File | What it is |
 |------|------------|
-| `k6/travelagency.js` | The test: user journey, test types, pass/fail goals (thresholds) |
-| `k6/run-k6.sh` | Runs k6 in Docker (`grafana/k6`) and pushes results to Prometheus |
-| `k6/seed-rooms.sql` | 240 test rooms. The seed data has hotels but **no rooms**, so search finds nothing to book |
-| `monitoring/grafana/dashboards/k6-load-test.json` | Grafana dashboard (added by `monitoring.yml` with the other dashboards) |
-| `monitoring/docker-compose.yml` | Prometheus gets `--web.enable-remote-write-receiver`, so k6 can push |
-| `k6/REPORT.md` | Results, bottleneck and scaling plan |
-
-## Test types
-
-| `TEST_TYPE` | Users (VUs) | Time | Question it answers |
-|-------------|-------------|------|---------------------|
-| `smoke` | 1 | 1 min | Does the script work? Run it first |
-| `load` | `VUS` (default 30) | 10 min | Is a normal busy day OK? |
-| `stress` | 20 → 50 → 100 → 150 | 24 min | Where does it break, and what breaks first? |
-| `spike` | 5 → 150 → 5 | 4.5 min | Does it survive a sudden crowd and recover? |
-
-Each virtual user is one customer with its own account (`k6user1`, `k6user2`, ...). The test makes
-the accounts itself in `setup()` through the normal sign-up form (`USERS`, default 200).
-Between pages a user "reads" for `THINK` seconds (default 1).
-
-Pass/fail goals (the run ends with exit code 99 if one fails):
-
-| Metric | Goal |
-|--------|------|
-| Failed HTTP requests | < 1% |
-| p95 of all requests | < 1.5 s |
-| p95 login / search / book | < 1.5 s / 2 s / 2 s |
-| k6 checks passed | > 99% |
+| `monitoring/loki/loki.yml` | Loki config: one process, files on disk, retention 7 days, ruler → Alertmanager |
+| `monitoring/loki/rules/fake/alerts.yml` | Alerts on logs (LogQL). `fake` = tenant name when auth is off |
+| `monitoring/docker-compose.yml` | New service `loki` (`grafana/loki:3.7.9`), volume `loki-data` |
+| `monitoring/grafana/provisioning/datasources/loki.yml` | Grafana data source "Loki" |
+| `monitoring/grafana/dashboards/travelagency-logs.json` | Dashboard **TravelAgency logs** |
+| `ansible/logging.yml` | Installs Grafana Alloy on `app` and `lb` hosts |
+| `ansible/config.alloy.j2` | Alloy config: what to read, filters, where to push |
+| `ansible/nginx-lb.conf.j2` | nginx writes a JSON access log (`log_format travelagency_json`) |
+| `ansible/prometheus.yml.j2` | New scrape jobs `loki` and `alloy` (TargetDown if a log shipper dies) |
+| `ansible/monitoring.yml` | Restarts Loki and Grafana when their files change, waits for Loki |
+| `ansible/group_vars/all.yml` | `loki_host`, `loki_port`, `alloy_port`; `app_version: logging-loki` |
+| `src/main/resources/logback.xml` | App log format and levels (INFO for our code, WARN for libraries) |
+| `pom.xml` | Removed `slf4j-nop`: it was a second SLF4J binding that could swallow all app logs |
 
 ## Run
 
-**1. Prometheus must accept remote write** (once). On the ansible host:
+On the ansible host, in `ansible/`:
 
 ```bash
-cd ansible
-ansible-playbook monitoring.yml     # copies the new compose file and dashboard, recreates Prometheus
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://192.168.18.108:9090/api/v1/write   # 404 = flag missing, 400/415 = ready
+set -a; source .env; set +a
+ansible-playbook monitoring.yml   # starts Loki, adds the data source and the dashboard
+curl -s http://192.168.18.108:3100/ready          # ready
+ansible-playbook lb.yml           # nginx JSON access log
+ansible-playbook app.yml          # builds this branch: logback.xml, no slf4j-nop
+ansible-playbook logging.yml      # Alloy on vm-app, vm-app2, vm-lb
 ```
 
-**2. Add test rooms** (once). On vm-db:
+Check: Prometheus → Targets: `loki` and `alloy` are UP. Alloy UI: `http://<server>:12345`.
 
-```bash
-mysql -u root -p travelagency < seed-rooms.sql
-mysql -u root -p travelagency -e "SELECT COUNT(*) FROM Room"    # 240
-```
+## Search (Grafana → Explore → Loki)
 
-**3. Run k6** from a machine that is **not** one of the tested servers (ansible host, your PC
-or vm-agent) and has Docker. Otherwise k6 uses the CPU of the server it measures.
+| Question | LogQL |
+|----------|-------|
+| All app logs of vm-app | `{job="tomcat", instance="vm-app"}` |
+| Errors on all nodes | `{job="tomcat"} \|~ " (ERROR\|SEVERE) \|Exception"` |
+| Failed logins | `{job="tomcat"} \|= "failed login"` |
+| 5xx through the load balancer | `{job="nginx", type="access"} \| json \| status >= 500` |
+| Slow requests (> 1 s) | `{job="nginx", type="access"} \| json \| request_time > 1` |
+| Requests per node, per minute | `sum by (upstream) (count_over_time({job="nginx", type="access"} \| json [1m]))` |
+| p95 time per node | `quantile_over_time(0.95, {job="nginx", type="access"} \| json \| unwrap request_time [5m]) by (upstream)` |
 
-```bash
-TEST_TYPE=smoke  ./k6/run-k6.sh     # first: everything green?
-TEST_TYPE=load   ./k6/run-k6.sh
-TEST_TYPE=stress ./k6/run-k6.sh
-```
+`|=` contains text, `|~` matches a regex, `| json` turns JSON fields into labels for this query only.
 
-The script prints a Grafana link for this run. Settings (environment variables):
+## Alerts on logs
 
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `BASE_URL` | `http://192.168.18.106` | nginx on vm-lb |
-| `PROMETHEUS` | `http://192.168.18.108:9090` | where to push results |
-| `GRAFANA` | `http://192.168.18.108:3000` | only for the printed link |
-| `TESTID` | `<type>-<date>-<time>` | name of the run in Grafana (`Test run` list) |
-| `VUS` | `30` | users for `load` |
-| `USERS` | `200` | test accounts (≥ max users) |
-| `THINK` | `1` | seconds between pages |
-| `USER_PREFIX`, `K6_USER_PASSWORD` | `k6user`, `K6load123` | test accounts |
+Loki checks the rules every minute and sends firing alerts to the same Alertmanager → Telegram.
 
-Without Docker: install k6 and run the same thing by hand:
+| Alert | When |
+|-------|------|
+| `Nginx5xxErrors` | more than 10 responses 5xx in 5 min (for 2 min) |
+| `AppErrorsInLogs` | more than 5 `ERROR`/`SEVERE` lines in 5 min on one node (for 2 min) |
 
-```bash
-K6_PROMETHEUS_RW_SERVER_URL=http://192.168.18.108:9090/api/v1/write \
-K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \
-BASE_URL=http://192.168.18.106 TEST_TYPE=smoke \
-k6 run -o experimental-prometheus-rw --tag testid=smoke-1 k6/travelagency.js
-```
+Also `TargetDown` from Prometheus now covers `loki` and `alloy`: if Alloy stops, logs stop and you get a message.
 
-The summary of every run is also saved to `k6/results/<testid>.json`.
-
-## Read the dashboard
-
-Every server panel also shows the number of users as a dashed line, so you see what happens
-to the servers when users go up.
-
-1. **Requests/s stops growing while users grow** → the system is full. Note the number of users
-   at that moment: that is the capacity.
-2. **At the same moment**, find the first resource at its limit:
-   - CPU of `vm-app*` near 100% → app nodes (add a node, more CPU)
-   - busy Tomcat threads = max → threads wait for something slower (usually the DB)
-   - `vm-db` CPU high, many running MySQL queries → database
-   - heap near 100%, GC time high → JVM memory
-   - `vm-lb` CPU high → nginx (unlikely)
-3. **Errors/s** and HTTP codes: 502/504 from nginx = Tomcat is too slow or down.
-
-## Clean up after tests
-
-The test leaves accounts `k6user*` and their bookings. On vm-db:
-
-```sql
--- Room.booking_id points to the booking, so first free the rooms:
-UPDATE Room r JOIN Booking b ON r.booking_id = b.bookingId JOIN User u ON b.user_id = u.userId
-   SET r.booking_id = NULL WHERE u.login LIKE 'k6user%';
-DELETE b FROM Booking b JOIN User u ON b.user_id = u.userId WHERE u.login LIKE 'k6user%';
-DELETE FROM User WHERE login LIKE 'k6user%';
-```
-
-Run the test on a test copy of the data, not on real customers.
+Details, choices and results: [REPORT.md](REPORT.md).

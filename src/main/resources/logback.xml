@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App logs go to stdout. Tomcat 9 sends stdout to the systemd journal (journalctl -u tomcat9),
+  Grafana Alloy reads the journal and pushes the lines to Loki.
+  Without this file logback writes everything at DEBUG level: thousands of lines per minute.
+-->
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <!-- 2026-11-03 10:15:00.123 INFO  [http-nio-8080-exec-5] o.p.controllers.SecurityController - Entering login -->
+      <!-- The line starts with the date: Alloy uses it to glue a stack trace into one entry -->
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Our code: INFO and above -->
+  <logger name="org.project" level="INFO"/>
+  <!-- DB migrations: show which ones were applied on start -->
+  <logger name="org.flywaydb" level="INFO"/>
+
+  <!-- Libraries (Spring, Hibernate, Redis ...): only warnings and errors -->
+  <root level="WARN">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>

@@ -1,0 +1,52 @@
+# Loki: stores logs from all servers. One process, files on disk (volume loki-data).
+# Alloy on every server pushes logs to :3100/loki/api/v1/push, Grafana reads them from :3100.
+auth_enabled: false            # one user ("tenant") called "fake", no login. Only for a home lab
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks   # the log lines themselves (compressed)
+  replication_factor: 1                # one copy: we have one Loki
+  ring:
+    kvstore:
+      store: inmemory
+
+# How the data is laid out on disk. v13 + tsdb is the current format.
+# Do not change "from" later: add a new entry with a new date instead.
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 168h        # keep logs 7 days, then the compactor deletes them
+  volume_enabled: true          # "how many logs" graphs in Grafana (Explore, Logs Drilldown)
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true       # without this, retention_period does nothing
+  delete_request_store: filesystem
+
+# Alert rules on logs (rules/fake/alerts.yml). Firing alerts go to the same Alertmanager -> Telegram
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /etc/loki/rules
+  rule_path: /loki/rules-temp
+  alertmanager_url: http://alertmanager:9093
+  enable_api: true
+
+analytics:
+  reporting_enabled: false      # do not send usage stats to Grafana Labs

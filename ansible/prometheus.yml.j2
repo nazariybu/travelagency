@@ -25,6 +25,21 @@ scrape_configs:
       - targets: ["alertmanager:9093"]
         labels: { instance: "{{ inventory_hostname }}" }
 
+  # Loki itself (in the same compose): if it is down, TargetDown fires
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+        labels: { instance: "{{ inventory_hostname }}" }
+
+  # Grafana Alloy (sends logs to Loki) on every server from logging.yml.
+  # If Alloy stops, logs stop and TargetDown fires
+  - job_name: alloy
+    static_configs:
+{% for host in groups['app'] + groups['lb'] %}
+      - targets: ["{{ hostvars[host].ansible_host }}:{{ alloy_port }}"]
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+
   # CPU, RAM, disk, network of every server (node_exporter)
   - job_name: node
     static_configs:

@@ -1,4 +1,20 @@
 # Managed by Ansible. Do not edit by hand.
+
+# One JSON line per request. Alloy sends it to Loki, Grafana reads the fields:
+# status, which app node answered (upstream) and how long it took (request_time, in seconds).
+log_format travelagency_json escape=json
+    '{"time":"$time_iso8601",'
+    '"client":"$remote_addr",'
+    '"method":"$request_method",'
+    '"uri":"$request_uri",'
+    '"status":$status,'
+    '"bytes":$body_bytes_sent,'
+    '"request_time":$request_time,'
+    '"upstream":"$upstream_addr",'
+    '"upstream_status":"$upstream_status",'
+    '"upstream_time":"$upstream_response_time",'
+    '"user_agent":"$http_user_agent"}';
+
 upstream travelagency {
     # Sessions are in Redis, so any node can serve any user (round-robin).
 
@@ -9,6 +25,8 @@ upstream travelagency {
 
 server {
     listen {{ lb_port }} default_server;
+
+    access_log /var/log/nginx/travelagency_access.log travelagency_json;
 
     location / {
         proxy_pass http://travelagency;

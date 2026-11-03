@@ -51,6 +51,28 @@ services:
       - prometheus
     restart: unless-stopped
 
+ # Logs of all servers. Alloy on vm-app*, vm-lb pushes logs here, Grafana shows them (data source "Loki")
+  loki:
+    image: grafana/loki:3.7.9
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki:/etc/loki:ro          # loki.yml + rules/fake/alerts.yml
+      - loki-data:/loki              # log chunks and index, survive a restart
+    ports:
+      - "3100:3100"                  # open for Alloy on the other servers
+    restart: unless-stopped
+
+  # Logs of all servers. Alloy on vm-app*, vm-lb pushes logs here, Grafana shows them (data source "Loki")
+    loki:
+      image: grafana/loki:3.7.9
+      command: ["-config.file=/etc/loki/loki.yml"]
+      volumes:
+        - ./loki:/etc/loki:ro          # loki.yml + rules/fake/alerts.yml
+        - loki-data:/loki              # log chunks and index, survive a restart
+      ports:
+        - "3100:3100"                  # open for Alloy on the other servers
+    restart: unless-stopped
+
   # Checks the site from outside, like a user: is it up, how fast, which HTTP code
   blackbox:
     image: prom/blackbox-exporter:v0.29.1
@@ -87,3 +109,4 @@ volumes:
   prometheus-data:
   alertmanager-data:
   grafana-data:
+  loki-data:

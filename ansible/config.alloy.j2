@@ -1,0 +1,53 @@
+// Managed by Ansible (logging.yml). Do not edit by hand.
+// Grafana Alloy on {{ inventory_hostname }}: reads the logs of this server and pushes them to Loki.
+// UI with the pipeline graph: http://{{ ansible_host }}:{{ alloy_port }}
+
+// Where to send. Every line gets the label instance="{{ inventory_hostname }}" (same name as in Prometheus)
+loki.write "loki" {
+  endpoint {
+    url = "http://{{ loki_host }}:{{ loki_port }}/loki/api/v1/push"
+  }
+  external_labels = { instance = "{{ inventory_hostname }}" }
+}
+{% if 'app' in group_names %}
+
+// ---------- Tomcat + the application ----------
+// Tomcat 9 (Ubuntu package) writes stdout/stderr to the systemd journal (journalctl -u tomcat9).
+// There are Tomcat messages, our logback logs and Java errors (stack traces).
+loki.source.journal "tomcat" {
+  matches    = "_SYSTEMD_UNIT=tomcat9.service"
+  labels     = { job = "tomcat" }
+  forward_to = [loki.process.tomcat.receiver]
+}
+
+loki.process "tomcat" {
+  // hibernate.show_sql=true prints every SQL query (~300 lines per page). Do not send them to Loki.
+  // How many were dropped: Prometheus metric loki_process_dropped_lines_total{reason="hibernate_sql"}
+  stage.drop {
+    expression          = `^Hibernate: `
+    drop_counter_reason = "hibernate_sql"
+  }
+
+  // A Java error is many lines ("at ...", "Caused by: ..."). Glue them into one entry.
+  // A new entry starts with a date: "2026-11-03 10:00:00" (logback) or "03-Nov-2026 10:00:00" (Tomcat)
+  stage.multiline {
+    firstline     = `^(\d{4}-\d{2}-\d{2} |\d{2}-\w{3}-\d{4} )`
+    max_wait_time = "3s"
+  }
+
+  forward_to = [loki.write.loki.receiver]
+}
+{% endif %}
+{% if 'lb' in group_names %}
+
+// ---------- nginx load balancer ----------
+// access: one JSON line per request (log_format travelagency_json in nginx-lb.conf.j2)
+// error:  "upstream timed out", "connect() failed" when an app node is down
+loki.source.file "nginx" {
+  targets = [
+    { __path__ = "/var/log/nginx/travelagency_access.log", job = "nginx", type = "access" },
+    { __path__ = "/var/log/nginx/error.log",               job = "nginx", type = "error" },
+  ]
+  forward_to = [loki.write.loki.receiver]
+}
+{% endif %}

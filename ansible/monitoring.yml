@@ -227,6 +227,23 @@
       register: compose
       changed_when: "'Started' in compose.stderr or 'Recreated' in compose.stderr or 'Created' in compose.stderr"
 
+    # Loki reads loki.yml and its alert rules only on start.
+    # Grafana reads data sources (provisioning/datasources/*.yml) only on start.
+    - name: Restart Loki and Grafana if their files changed
+      ansible.builtin.command:
+        cmd: docker compose restart loki grafana
+        chdir: "{{ monitoring_dir }}"
+      when: files.changed
+
+    - name: Wait until Loki is ready
+      ansible.builtin.uri:
+        url: http://localhost:3100/ready
+        status_code: 200
+      register: loki
+      until: loki.status == 200
+      retries: 20
+      delay: 5
+
     # Prometheus reads its config only on start or reload
     - name: Reload Prometheus if its config or rules changed
       ansible.builtin.uri:
@@ -264,3 +281,4 @@
           - "Grafana:    http://{{ ansible_host }}:3000  (admin / GRAFANA_ADMIN_PASSWORD)"
           - "Prometheus: http://{{ ansible_host }}:9090/targets  (all targets must be UP)"
           - "Alertmanager: http://{{ ansible_host }}:9093  (alerts sent to Telegram)"
+          - "Loki:       http://{{ ansible_host }}:3100/ready  (logs, read them in Grafana -> Explore -> Loki)"          
