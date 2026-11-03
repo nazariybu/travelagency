@@ -4,12 +4,44 @@ k6 plays real customers: **log in → open hotels → search free rooms → book
 all through nginx on vm-lb. Results go to Prometheus (remote write) and are shown in Grafana
 on the dashboard **TravelAgency load test (k6)**, next to CPU, Tomcat threads, JVM heap and MySQL.
 
+```mermaid
+flowchart LR
+  k6["🧪 k6<br/>ansible host / PC / vm-agent"]
+
+  subgraph px["Proxmox host 192.168.18.200 (LXC containers)"]
+    lb["⚖️ nginx load balancer<br/>vm-lb · .106:80"]
+
+    subgraph app["App nodes · Tomcat 9"]
+      a1["☕ vm-app<br/>.101:8080"]
+      a2["☕ vm-app2<br/>.105:8080"]
+    end
+
+    db[("🐬 MySQL 8<br/>vm-db · .102")]
+    redis[("🔴 Redis · sessions<br/>vm-redis · .107")]
+
+    subgraph mon["vm-monitor · .108"]
+      prom["📈 Prometheus :9090"]
+      graf["📊 Grafana :3000<br/>TravelAgency load test (k6)"]
+    end
+  end
+
+  k6 -- "HTTP: login → search → book → logout" --> lb
+  lb --> a1 & a2
+  a1 & a2 --> db
+  a1 & a2 --> redis
+  k6 -. "remote write /api/v1/write" .-> prom
+  prom -. "scrape exporters" .-> lb & a1 & a2 & db & redis
+  prom --> graf
+
+  classDef load fill:#fde68a,stroke:#b45309,color:#000
+  classDef data fill:#bfdbfe,stroke:#1d4ed8,color:#000
+  classDef obs fill:#bbf7d0,stroke:#15803d,color:#000
+  class k6 load
+  class db,redis data
+  class prom,graf obs
 ```
- k6 (ansible host / PC) ──HTTP──> nginx vm-lb ──> Tomcat vm-app, vm-app2 ──> MySQL vm-db
-        │                                               └──> Redis vm-redis (sessions)
-        └──remote write──> Prometheus vm-monitor <──scrape── node / jmx / mysqld / redis / pve exporters
-                                  └──> Grafana: "TravelAgency load test (k6)"
-```
+
+Solid lines = user traffic, dotted lines = metrics.
 
 ## Files
 

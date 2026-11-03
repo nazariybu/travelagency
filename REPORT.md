@@ -46,8 +46,8 @@ Servers: all LXC containers run on one Proxmox host.
 | load-20261103-0934 | 30 | 1 (vm-app2 only) | ~16 at start → ~8 at end | up to ~6 s | 0% | 689 | ❌ p95 > 1.5 s |
 | load-20261103-1000 | 30 | 2 (≈4.5 req/s each) | ~9 | ~8–10 s | 0% | 516 | ❌ p95 > 1.5 s |
 
-![First run: one node](../images/k6-load-1-node.png)
-![Second run: two nodes](../images/k6-load-2-nodes.png)
+![First run: one node](/images/k6-load-1-node.png)
+![Second run: two nodes](/images/k6-load-2-nodes.png)
 
 ### Finding 1: load balancing did not work
 
