@@ -99,12 +99,6 @@ Terraform `<terraform version>`, provider hashicorp/aws `<version from .terrafor
 | `terraform destroy` | `Resources: 24 destroyed.` | `<OK>` |
 | Nothing left | Tag Editor `Project = travelagency` → no resources | `<OK>` |
 
-Screenshots: 
---- a/REPORT.md
-+++ b/REPORT.md
-@@ -99,8 +99,25 @@
--Screenshots: `images/aws-budget.png`, `images/aws-ec2.png`, `images/aws-target-group.png`,
--`images/aws-rds.png`, `images/aws-site.png`, `images/aws-tag-editor-empty.png`.
 ### Screenshots
 
 Two EC2 app nodes:
