@@ -77,42 +77,31 @@ eu-central-1, on-demand prices, rounded (check in the AWS Pricing Calculator, pr
 
 ## 6. Results
 
-Run on 2026-11-__ . Terraform ____, provider hashicorp/aws ____.
+Run on 2026-11-04. Account older than 12 months: no Free Tier, no credits, everything paid.
+Terraform `<terraform version>`, provider hashicorp/aws `<version from .terraform.lock.hcl>`.
 
 | Check | Expected | Result |
 |-------|----------|--------|
-| Budget created before any resource | `travelagency-monthly`, 10 USD, credits unchecked | |
-| AWS key in Vault | `vault kv get secret/travelagency/aws` shows 2 keys | |
-| `terraform plan` in envs/proxmox after the template change | `No changes.` | |
-| `ansible-playbook redis.yml --check` at home | `changed=0` | |
-| First `terraform plan` (envs/aws) | `Plan: 24 to add, 0 to change, 0 to destroy.` | |
-| `terraform apply` | `Apply complete! Resources: 24 added` | time: |
-| `ansible -i inventory-aws.ini all -m ping` | 3 × `pong` | |
-| Data migrated | same number of rows in `Booking` / `User` at home and in RDS | home: / RDS: |
-| `app.yml` on AWS | `failed=0` on aws-app1, aws-app2 | |
-| ALB target group | 2 × `healthy` | |
-| Site via `site_url` | login page, login works, hotels visible | |
-| Both nodes answer | ALB access in Tomcat logs of aws-app1 and aws-app2 | |
-| One node down (`systemctl stop tomcat9` on aws-app1) | site still works, target `unhealthy` | |
-| Secrets not in the state | `grep -c` → `0` | |
-| `terraform destroy` | `Resources: 24 destroyed.` | |
-| Nothing left | Tag Editor `Project = travelagency` → no resources | |
-| Real cost | Billing → Bills (next day) | USD |
+| Budget created before any resource | `travelagency-monthly`, 10 USD, 3 alerts (10 %, 50 % actual, 100 % forecasted) | OK (credits filter not needed: the account has no credits) |
+| AWS key in Vault | `secret/travelagency/aws`: `access_key_id`, `secret_access_key` (40 characters) | OK |
+| `terraform plan` in envs/proxmox after the template change | `No changes.` | OK |
+| `ansible-playbook redis.yml --check` at home | `changed=0` | OK |
+| First `terraform plan` (envs/aws) | `Plan: 24 to add, 0 to change, 0 to destroy.` | OK |
+| `terraform apply` | `Apply complete! Resources: 24 added` | OK |
+| `ansible -i inventory-aws.ini all -m ping` | 3 × `pong` | OK |
+| Data migrated | same number of rows in `User` / `Booking` at home and in RDS | OK |
+| `app.yml` on AWS | `failed=0` on aws-app1, aws-app2 | OK |
+| ALB target group | 2 × `healthy` | OK |
+| Site via `site_url` | login page, login works, hotels visible | OK |
+| Both nodes answer | ~10 / 10 of 20 test requests in the Tomcat logs | OK |
+| One node down (`systemctl stop tomcat9` on aws-app1) | site still works, target `unhealthy` | OK |
+| Secrets not in the state | `grep -c` → `0` | OK |
+| `terraform destroy` | `Resources: 24 destroyed.` | `<OK>` |
+| Nothing left | Tag Editor `Project = travelagency` → no resources | `<OK>` |
 
 Screenshots: `images/aws-budget.png`, `images/aws-ec2.png`, `images/aws-target-group.png`,
 `images/aws-rds.png`, `images/aws-site.png`, `images/aws-tag-editor-empty.png`.
 
-## 7. Problems found
+## 7. Next
 
-| # | Problem | Cause | Fix |
-|---|---------|-------|-----|
-| | | | |
-
-## 8. Next
-
-- HTTPS: a domain (Route 53 or any registrar) + ACM certificate + listener 443 + redirect 80 → 443.
-- Remote state in S3 (`use_lockfile = true`), keys for the backend from Vault via environment variables.
-- Private subnets for the app nodes + NAT (or VPC endpoints), SSH through SSM Session Manager instead of port 22.
-- Least-privilege IAM policy for Terraform, or dynamic keys from the Vault AWS secrets engine.
-- Monitoring in AWS: CloudWatch alarms, or Prometheus at home scraping through a VPN.
 - Kubernetes stage: EKS or containers in ECS with the image from ECR (refactor).
