@@ -89,3 +89,9 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# AWS (terraform/envs/aws)
+# inventory written by Terraform: public IPs change every time the servers are re-created
+ansible/inventory-aws.ini
+# database dumps for the migration: real user data, never in Git
+*.sql.gz

@@ -1,86 +1,118 @@
-# REPORT: Infrastructure as Code with Terraform (Proxmox)
+# REPORT: Migrate an application to the cloud (AWS)
 
 ## 1. Goal
 
-Describe all TravelAgency servers (9 LXC containers in Proxmox) as code with Terraform, instead of the
-Ansible playbook `provision.yml`. Take the Proxmox token from Vault. Build the folders so that the next stages
-(cloud, Kubernetes) can switch the platform without rewriting everything.
+Run TravelAgency in a public cloud, created with Terraform and configured with the existing Ansible
+playbooks: two app nodes behind a load balancer, Redis for sessions, a managed MySQL database with the data
+from the home server. Keep the cost at (almost) zero: Free Tier sizes, a budget alert, and
+`terraform destroy` after the demo.
 
-## 2. Before and after
+## 2. Migration strategy
 
-| | Before (`ansible/provision.yml`) | After (Terraform) |
-|---|---|---|
-| Create a container | ✅ | ✅ |
-| Change CPU / RAM of an existing one | ❌ (`state: present` skips existing containers) | ✅ in place |
-| Delete a container that is not in the list | ❌ manual | ✅ `apply` deletes it |
-| Show the difference before changing | ❌ | ✅ `terraform plan` |
-| Know what was created by code | ❌ | ✅ state file, `terraform state list` |
-| Inventory for Ansible | written by hand, could differ | generated from the same list |
-| Proxmox token | Vault lookup (Ansible) | Vault, `ephemeral` (not saved anywhere) |
+The "6 R" of cloud migration: rehost, replatform, refactor, repurchase, retire, retain.
+
+| Part | Strategy | Why |
+|------|----------|-----|
+| App nodes (Tomcat 9 + WAR) | **Rehost** (lift and shift) to EC2 | Same OS (Ubuntu 22.04), same `app.yml`. No code change |
+| Redis (sessions) | **Rehost** to EC2 | ElastiCache with a password needs TLS (in-transit encryption); the app connects without TLS. A code change = refactor, not this stage |
+| nginx load balancer | **Replatform** to ALB | Managed, 2 zones, health checks, public DNS name. Nothing to install or patch |
+| MySQL | **Replatform** to RDS | Managed: backups, minor updates, no SSH, no public address. Data with `mysqldump` |
+| Vault, Jenkins, Prometheus/Grafana/Loki | **Retain** (stay at home) | Not needed for the app to run; would double the cost |
+| Containers / Kubernetes | **Refactor**: next stage | ECS/EKS = bigger change, Kubernetes stage |
 
 ## 3. Choices
 
 | Question | Chosen | Why | Not chosen |
 |----------|--------|-----|------------|
-| Proxmox provider | `bpg/proxmox` 0.116.x | Actively maintained, supports LXC and API tokens, import | `Telmate/proxmox`: fewer LXC features, slower releases |
-| Version pin | `~> 0.116.1` + `.terraform.lock.hcl` in Git | The provider has breaking changes in minor versions; same versions on every machine | `>= 0.x` (an update could break the plan) |
-| Existing containers | `import` blocks (`imports.tf`), then the file is removed | Containers keep their data, nothing is re-created | Destroy + create (data loss), `terraform import` command 9 times (not in code) |
-| OS template and SSH key after import | `lifecycle.ignore_changes` | Proxmox does not store them; without ignore the plan wants to re-create all 9 containers | |
-| Secret in the state | `ephemeral "vault_kv_secret_v2"` (Terraform 1.10+) | Not in `terraform.tfstate`, not in plan files | `data "vault_kv_secret_v2"`: writes the token in plain text to the state |
-| Vault child token | `skip_child_token = true` | The `travelagency-admin` policy has no `auth/token/create`; our userpass token already lives only 8 h | Child token: better (shorter life), needs `path "auth/token/create" { capabilities = ["update"] }` in the policy (root token) |
-| Proxmox token | Same `ansible@pve!ansible` | Already has the rights and is in Vault | A separate `terraform@pve` user: better audit, next improvement |
-| State | Local file, not in Git | One person, one machine; Git must never hold state | Remote backend (S3 / MinIO / Terraform Cloud): in the cloud stage |
-| Structure | `modules/proxmox-lxc` + `envs/proxmox` + shared inventory template | Platform-specific code in one module; a cloud = new module + new env folder | One flat folder (hard to add a second platform) |
-| Inventory | `local_file` from `templates/inventory.ini.tftpl` | One list of servers for Terraform and Ansible | Hand-written inventory (two lists can drift apart) |
+| Cloud | AWS, eu-central-1 (Frankfurt) | Most used, Free Tier + credits for new accounts, close to Ukraine | Azure, GCP (also fine; one cloud for the whole project) |
+| Terraform layout | new module `modules/aws-ec2` + new folder `envs/aws`, shared inventory template | Planned in the IaC stage: the platform code is in one module, every env has its own state | Copying envs/proxmox and changing everything |
+| Module inputs | same names as `proxmox-lxc`: `name`, `ip`, `disk`, `ssh_public_key`, `tags` (+ `swap`) | Both envs read the same way | `cores`/`memory`: in AWS you pick an `instance_type` instead |
+| App/Redis servers | EC2 `t3.micro`, Ubuntu 22.04 (newest official Canonical AMI) | Free Tier; 22.04 has the `tomcat9` package (24.04 only `tomcat10`) | t3.small (2 GB, faster Maven build, not Free Tier for old accounts) |
+| 1 GB RAM | 2 GB swap file via cloud-init on app nodes | Maven + Tomcat do not fit in 1 GB | Building the WAR elsewhere (`-e war_file=`), also possible |
+| SSH user | `ubuntu` + `become` (cloud-init puts the key) | EC2 Ubuntu does not allow root SSH; no EC2 key pair resource needed | Allow root login (worse) |
+| Network | own VPC, 2 public subnets + 2 private DB subnets, **no NAT gateway** | NAT costs ~35 USD/month; security groups limit access | Private app subnets + NAT (better isolation, costs money) |
+| Who can reach it | SSH and HTTP only from the home public IP (found by `data "http"`, checkip.amazonaws.com); `site_open_to_world = true` for a public demo | No open SSH to the internet, IP is not written in Git | Fixed IP in tfvars (would be in a public repo) |
+| Load balancer | ALB, HTTP :80, health check `/form-login`, round-robin, no stickiness | Sessions are in Redis, so any node can serve any user | Classic/Network LB; nginx on EC2 (rehost) |
+| HTTPS | **not yet** | ACM certificate needs a domain name; we have none | Self-signed certificate (browser warning) |
+| Database | RDS MySQL **8.4**, `db.t4g.micro`, 20 GB gp2, single-AZ, not public, encrypted | Free Tier; 8.0 is in paid Extended Support since 2026-07-31 | MySQL 8.0 (extra cost), Multi-AZ (2x price), Aurora (not Free Tier) |
+| Extended Support | `engine_lifecycle_support = open-source-rds-extended-support-disabled` | Never pay for an old engine by mistake | default (auto-enrolled, paid) |
+| DB password | the same `db_password` from Vault, `password_wo` (write-only) | Not in the state; one password for RDS and Tomcat | `password` (saved in the state in plain text), `manage_master_user_password` (Secrets Manager, 0.40 USD/month, second secret store) |
+| AWS credentials | IAM user `terraform-travelagency` (EC2 + RDS full access), access key in Vault `secret/travelagency/aws`, read as `ephemeral` | No root keys; not in the state or in files | AWS CLI profile in `~/.aws/credentials` (plain text file); Vault AWS secrets engine (dynamic keys, better, needs root token setup) |
+| State | local file per env, not in Git | One person, one machine; the S3 backend cannot read its keys from the Vault provider (backend starts before providers) | S3 backend (next step) |
+| Budget | AWS Budgets in the console, 10 USD/month, **credits not included** | Exists before any resource and even if Terraform breaks; with credits included the spend looks like 0 and no alert comes | Budget in Terraform (would be destroyed with `terraform destroy` or never created if apply fails) |
+| Data migration | `mysqldump` → gzip → scp to aws-app1 → `mysql` into RDS, once | Small DB, simple, shows the real steps | AWS DMS (for big DBs / no downtime, not needed) |
 
-## 4. How a change works
+## 4. Cost estimate
 
-1. Edit `envs/proxmox/terraform.tfvars`.
-2. `terraform plan`: Terraform reads the token from Vault, asks Proxmox the real state, compares it with the
-   code and the state file, prints `+` create, `~` change, `-` delete, `-/+` re-create.
-3. `terraform apply`: the same plan, `yes`, then the API calls. The state and `ansible/inventory.ini` are updated.
-4. Ansible playbook for the new or changed server.
+eu-central-1, on-demand prices, rounded (check in the AWS Pricing Calculator, prices change):
 
-Changes that **restart** a container (bpg/proxmox): memory/swap, network or IP, hostname, DNS, console.
-No restart: CPU cores, tags, description, start on boot, nesting.
+| Resource | Count | ~USD per hour | ~USD per 30 days |
+|----------|-------|---------------|------------------|
+| EC2 t3.micro | 3 | 0.036 | 26 |
+| EBS gp3 | 28 GB | 0.004 | 2.7 |
+| Public IPv4 (3 servers + 2 for the ALB) | 5 | 0.025 | 18 |
+| ALB (hour + minimal LCU) | 1 | 0.035 | 25 |
+| RDS db.t4g.micro | 1 | 0.019 | 14 |
+| RDS storage gp2 | 20 GB | 0.004 | 2.7 |
+| **Total without Free Tier** | | **~0.12** | **~89** |
+
+- This account is older than 12 months: no Free Tier, no credits, everything is paid.
+  Plan: create, check and destroy in one session of ~4–5 hours = ~0.5–1 USD.
+- New accounts get credits (100 USD at sign-up, up to 100 USD more for activities), a short demo is then free.
+- Older accounts (before 2025-07-15) in their first 12 months: 750 h/month EC2 t3.micro, RDS db.t4g.micro,
+  ALB and public IPv4 are free, ~30 USD/month left with 3 servers running all month.
+- Biggest hidden costs avoided: NAT gateway (~35 USD/month), MySQL 8.0 Extended Support
+  (~0.10 USD per vCPU-hour = ~146 USD/month for 2 vCPU), forgotten resources (budget + destroy + tag check).
 
 ## 5. Security notes
 
-- No secret in Git, in `*.tf` or in the state. Checked with `grep -c token_secret terraform.tfstate` → `0`.
-- `terraform.tfstate` still describes the whole infrastructure (IPs, IDs): it is in `.gitignore`.
-- `insecure = true` for the Proxmox API (self-signed certificate). Fix later: Proxmox certificate from an
-  internal CA or Let's Encrypt, then `insecure = false`.
-- Vault over HTTP (home lab, see the Vault REPORT): the token travels in plain text inside the LAN.
+- No secret in Git, `*.tf`, `terraform.tfstate` or plan files: AWS keys and the DB password are `ephemeral` / write-only.
+- RDS: no public address, port 3306 only from the app security group. Redis: 6379 only from the app security group.
+- SSH only from the home IP, key only, user `ubuntu`. IMDSv2 required on all servers. EBS and RDS encrypted.
+- HTTP only (no domain for a certificate): the login password goes in plain text between browser and ALB.
+  That is why the site is open only to the home IP by default.
+- The IAM user has full EC2 and RDS rights: more than needed. Better: a policy with only the used actions,
+  or short-lived keys from the Vault AWS secrets engine.
+- The JDBC URL has `useSSL=false` (inside the VPC). Better: TLS to RDS with the RDS CA bundle.
 
 ## 6. Results
 
-Run on 2026-11-04. Proxmox VE 9.1.4, provider bpg/proxmox 0.116.x.
+Run on 2026-11-__ . Terraform ____, provider hashicorp/aws ____.
 
 | Check | Expected | Result |
 |-------|----------|--------|
-| `pct config` of all 9 containers before import | same as `terraform.tfvars` | OK: cores, memory, swap 512, disk, nesting, IP, bridge all equal; no `onboot` line (autostart was off) |
-| `terraform version` | >= 1.10 | 1.17 |
-| First `terraform plan` | `9 to import, 1 to add, 9 to change, 0 to destroy`, no `must be replaced` | OK |
-| `terraform apply` | `Apply complete! Resources: 9 imported, 1 added, 9 changed, 0 destroyed.` | OK |
-| Proxmox UI | tags `terraform` + group on all 9, Notes "Managed by Terraform" | OK (screenshot below) |
-| `terraform plan` after apply | `No changes.` | OK |
-| `terraform state list` | 9 containers + `local_file.ansible_inventory` | OK: 10 lines |
-| `git diff ansible/inventory.ini` | only the header comment and whitespace | OK: + 2 comment lines, trailing spaces after vm-lb and empty lines at the end removed; hosts and IPs the same |
-| Token not in state | `grep -c token_secret terraform.tfstate` → `0` | OK: `0`, and `0` for `ansible@pve!ansible=` |
-| Test server vm-tftest (create → destroy) | created in ~1 min, SSH works, then deleted | OK: plan `2 to add, 1 to destroy` (the 1 = inventory file re-written), container 399 created, then removed with `1 to add, 2 to destroy` |
-| `ansible all -m ping` | 9 × `pong` | OK: 9 × `pong` from the generated inventory |
+| Budget created before any resource | `travelagency-monthly`, 10 USD, credits unchecked | |
+| AWS key in Vault | `vault kv get secret/travelagency/aws` shows 2 keys | |
+| `terraform plan` in envs/proxmox after the template change | `No changes.` | |
+| `ansible-playbook redis.yml --check` at home | `changed=0` | |
+| First `terraform plan` (envs/aws) | `Plan: 24 to add, 0 to change, 0 to destroy.` | |
+| `terraform apply` | `Apply complete! Resources: 24 added` | time: |
+| `ansible -i inventory-aws.ini all -m ping` | 3 × `pong` | |
+| Data migrated | same number of rows in `Booking` / `User` at home and in RDS | home: / RDS: |
+| `app.yml` on AWS | `failed=0` on aws-app1, aws-app2 | |
+| ALB target group | 2 × `healthy` | |
+| Site via `site_url` | login page, login works, hotels visible | |
+| Both nodes answer | ALB access in Tomcat logs of aws-app1 and aws-app2 | |
+| One node down (`systemctl stop tomcat9` on aws-app1) | site still works, target `unhealthy` | |
+| Secrets not in the state | `grep -c` → `0` | |
+| `terraform destroy` | `Resources: 24 destroyed.` | |
+| Nothing left | Tag Editor `Project = travelagency` → no resources | |
+| Real cost | Billing → Bills (next day) | USD |
 
-![Proxmox tags](../images/terraform-proxmox-tags.png)
+Screenshots: `images/aws-budget.png`, `images/aws-ec2.png`, `images/aws-target-group.png`,
+`images/aws-rds.png`, `images/aws-site.png`, `images/aws-tag-editor-empty.png`.
 
 ## 7. Problems found
 
 | # | Problem | Cause | Fix |
 |---|---------|-------|-----|
-| 1 | `terraform plan` failed: `failed to lookup token ... Code: 503 ... Vault is sealed` | vm-vault had been restarted earlier; a restarted Vault always starts sealed | `vault operator unseal` two times, then plan again. Terraform needs Vault for every plan/apply, like Ansible |
-| 2 | After `apply` all 9 containers had the same short uptime (`up 7 minutes`, vm-app in the UI `00:01:57`), vm-vault too | Confirmed by the Proxmox task log (`pvenode task list`): `vzreboot` of all 9 containers by `ansible@pve!ansible` (the token Terraform uses) in the same second, during `apply`. The Proxmox host itself was not restarted (up since 2026-10-26). The provider reboots a container after an update when memory, network/IP, hostname, DNS or console changed; the exact field: `terraform show import.tfplan` | Check the plan for `~ memory`, `~ network_interface`, `~ initialization`, `~ console`. After a restart of vm-vault: unseal again. Next time look for these blocks in the plan before `apply` |
+| | | | |
 
 ## 8. Next
 
-- Cloud stage: `modules/<cloud>-vm` + `envs/<cloud>`, remote state backend.
-- Separate Proxmox user `terraform@pve` with only the needed rights.
-- Kubernetes: cluster nodes from the same `servers` list.
+- HTTPS: a domain (Route 53 or any registrar) + ACM certificate + listener 443 + redirect 80 → 443.
+- Remote state in S3 (`use_lockfile = true`), keys for the backend from Vault via environment variables.
+- Private subnets for the app nodes + NAT (or VPC endpoints), SSH through SSM Session Manager instead of port 22.
+- Least-privilege IAM policy for Terraform, or dynamic keys from the Vault AWS secrets engine.
+- Monitoring in AWS: CloudWatch alarms, or Prometheus at home scraping through a VPN.
+- Kubernetes stage: EKS or containers in ECS with the image from ECR (refactor).

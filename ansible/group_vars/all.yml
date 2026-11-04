@@ -6,7 +6,10 @@ db_name: travelagency
 db_user: travel
 db_password: "{{ vault_app.db_password }}"   # secret: from Vault, secret/travelagency/app
 db_allowed_hosts: "192.168.18.%"  # who can connect to MySQL
-db_host: "{{ hostvars[groups['db'][0]].ansible_host }}"  # IP of the first db server
+# Address of the database. Home: IP of the first [db] server.
+# AWS: there is no [db] server, the database is RDS; Terraform writes its address to
+# inventory-aws.ini as db_endpoint.
+db_host: "{{ db_endpoint if db_endpoint is defined else hostvars[groups['db'][0]].ansible_host }}"
 
 # --- Application ---
 app_repo: https://github.com/nazariybu/travelagency
@@ -27,7 +30,9 @@ jenkins_agent_home: /home/jenkins
 smee_url: https://smee.io/a7ClmtoMJzqcfNMS
 
 # --- Redis (shared HTTP sessions) ---
-redis_host: "{{ hostvars[groups['redis'][0]].ansible_host }}"
+# private_ip is set only in AWS (inventory-aws.ini): there ansible_host is the PUBLIC IP,
+# but the app must reach Redis inside the VPC. At home there is no private_ip, so ansible_host is used.
+redis_host: "{{ hostvars[groups['redis'][0]].private_ip | default(hostvars[groups['redis'][0]].ansible_host) }}"
 redis_port: 6379
 redis_password: "{{ vault_app.redis_password }}"   # secret: from Vault, secret/travelagency/app
 
@@ -53,7 +58,9 @@ alloy_port: 12345                        # Alloy UI and its own metrics on every
 # --- Vault (vault.yml + all secrets) ---
 vault_host: "{{ hostvars[groups['vault'][0]].ansible_host }}"
 vault_port: 8200
-vault_url: "http://{{ vault_host }}:{{ vault_port }}"   # no TLS: home lab only, see REPORT.md
+# no TLS: home lab only, see REPORT.md.
+# AWS inventory has no [vault] server (Vault stays at home), it gives vault_address instead.
+vault_url: "{{ vault_address if vault_address is defined else 'http://' ~ vault_host ~ ':' ~ vault_port }}"
 vault_kv_mount: secret                                  # KV version 2 secrets engine
 
 # Each line below asks Vault for one secret "folder" and gives back all its keys.

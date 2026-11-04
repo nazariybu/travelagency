@@ -1,0 +1,20 @@
+#cloud-config
+# First boot of the server: cloud-init inside Ubuntu reads this once.
+# Written by Terraform (terraform/modules/aws-ec2/main.tf), do not edit on the server.
+
+hostname: ${hostname}
+preserve_hostname: false
+manage_etc_hosts: true   # put the hostname in /etc/hosts, otherwise sudo says "unable to resolve host"
+
+# Key for the default user "ubuntu". EC2 Ubuntu images do not allow SSH as root:
+# Ansible logs in as ubuntu and uses sudo (become: true in the playbooks).
+ssh_authorized_keys:
+  - ${ssh_public_key}
+%{ if swap_bytes > 0 ~}
+
+# Swap file: extra "slow memory" on the disk, so Maven and Tomcat do not run out of 1 GB RAM.
+swap:
+  filename: /swapfile
+  size: ${swap_bytes}
+  maxsize: ${swap_bytes}
+%{ endif ~}

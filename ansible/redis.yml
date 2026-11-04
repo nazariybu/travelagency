@@ -20,11 +20,13 @@
         cache_valid_time: 3600
 
     # By default Redis listens only on localhost. App nodes need the LAN address.
+    # AWS: ansible_host is the public IP, which is not on the server itself, so we use private_ip
+    # (set only in inventory-aws.ini). Home: no private_ip, ansible_host is the LAN address.
     - name: Listen on localhost and on the local network
       ansible.builtin.lineinfile:
         path: /etc/redis/redis.conf
         regexp: '^bind '
-        line: "bind 127.0.0.1 {{ ansible_host }}"
+        line: "bind 127.0.0.1 {{ private_ip | default(ansible_host) }}"
       notify: Restart Redis
 
     # Without a password anyone in the network can read all sessions.
