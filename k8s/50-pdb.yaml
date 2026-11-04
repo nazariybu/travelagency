@@ -1,0 +1,15 @@
+# PodDisruptionBudget = "during PLANNED work keep at least 1 app pod running".
+# "kubectl drain <node>" (node maintenance, an EKS node update) waits instead of stopping the last pod.
+# It does not help when a node just crashes: that is what 2+ pods on 2 nodes are for.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: travelagency
+  namespace: travelagency
+  labels:
+    app.kubernetes.io/name: travelagency
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: travelagency

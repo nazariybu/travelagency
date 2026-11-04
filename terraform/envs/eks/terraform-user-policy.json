@@ -1,0 +1,69 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ManageEKS",
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageOnlyTravelagencyRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/travelagency-*"
+    },
+    {
+      "Sid": "ServiceLinkedRolesForEKS",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "eks.amazonaws.com",
+            "eks-nodegroup.amazonaws.com",
+            "autoscaling.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com",
+            "spot.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "CheckServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/*"
+    },
+    {
+      "Sid": "ReadAwsManagedPolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions"
+      ],
+      "Resource": "arn:aws:iam::aws:policy/*"
+    },
+    {
+      "Sid": "SeeNodeAutoScalingGroups",
+      "Effect": "Allow",
+      "Action": "autoscaling:Describe*",
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# HorizontalPodAutoscaler = more pods when they are busy, fewer when they are idle.
+# Every 15 s it reads the CPU of the pods (metrics-server, the EKS add-on in terraform/envs/eks/eks.tf) and compares it
+# with the CPU "request" (250m in 20-deployment.yaml): above 70 % on average -> one more pod.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: travelagency
+  namespace: travelagency
+  labels:
+    app.kubernetes.io/name: travelagency
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: travelagency
+  minReplicas: 2                   # never fewer: one per node
+  maxReplicas: 4                   # 4 x 1 GiB fits on two t3.medium nodes (4 GB each)
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # wait 5 min of low CPU before removing a pod (no "flapping")

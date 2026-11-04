@@ -1,0 +1,21 @@
+# ConfigMap = settings that are NOT secret. The pod gets every key as an environment variable
+# (the same names Tomcat gets on vm-app from ansible/travelagency.conf.j2).
+# Passwords are in the Secret "travelagency-secrets" (you create it from Vault, step 10 of the instruction).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: travelagency-config
+  namespace: travelagency
+  labels:
+    app.kubernetes.io/name: travelagency
+data:
+  # "mysql" and "redis" are Service names inside the namespace (cluster DNS):
+  #   mysql = alias of the RDS address (k8s/05-aws-generated.yaml, written by Terraform)
+  #   redis = the Redis pod (k8s/15-redis.yaml)
+  DB_TRAVELAGENCY_URL: "jdbc:mysql://mysql:3306/travelagency?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8"
+  DB_TRAVELAGENCY_USER: "travel"
+  REDIS_TRAVELAGENCY_HOST: "redis"
+  REDIS_TRAVELAGENCY_PORT: "6379"
+  # Java inside a container: take 60 % of the container memory limit for the heap
+  # (1 GiB limit -> ~600 MB heap, the rest is for Tomcat, classes and threads).
+  CATALINA_OPTS: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"

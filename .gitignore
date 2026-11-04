@@ -95,3 +95,7 @@ override.tf.json
 ansible/inventory-aws.ini
 # database dumps for the migration: real user data, never in Git
 *.sql.gz
+
+# EKS (terraform/envs/eks)
+# written by Terraform: RDS address and your home IP, different after every apply
+k8s/05-aws-generated.yaml

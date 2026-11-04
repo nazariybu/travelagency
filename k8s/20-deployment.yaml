@@ -1,0 +1,114 @@
+# Deployment = "keep N copies (pods) of this container running".
+# A pod dies -> Kubernetes starts a new one. A new image -> pods are replaced one by one (rolling update).
+# How many copies: the HorizontalPodAutoscaler (60-hpa.yaml) decides, 2 to 4. That is why there is no "replicas" here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: travelagency
+  namespace: travelagency
+  labels:
+    app.kubernetes.io/name: travelagency
+spec:
+  revisionHistoryLimit: 5          # keep 5 old versions for "kubectl rollout undo"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: travelagency
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                  # start 1 new pod first ...
+      maxUnavailable: 0            # ... and remove an old one only when the new one is Ready: no downtime
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: travelagency
+    spec:
+      # Spread the pods over the 2 nodes (and so over 2 zones): one node down = the site still works.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: travelagency
+
+      # A node stops answering (e.g. AWS took back a Spot server) -> move its pods after 30 s (default: 5 minutes).
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+
+      # Security: the image already runs as user 10001 (Dockerfile "USER 10001"). Here Kubernetes
+      # also CHECKS it. These lines are what the "restricted" Pod Security Standard asks for (next stage).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault     # block rare, dangerous Linux system calls
+
+      # Do NOT give the pod the old "docker links" variables of every Service (REDIS_PORT=tcp://..., MYSQL_PORT=...).
+      # Spring reads the setting "redis.port" also from the env variable REDIS_PORT, and "tcp://10.x.x.x:6379"
+      # is not a number: the app does not start. The app finds Redis and MySQL by DNS names anyway.
+      enableServiceLinks: false
+
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: tomcat
+          # The image Jenkins built and pushed to Docker Hub (tag = Jenkins build number).
+          # A fixed tag, not "latest": you always know which version runs, and a rollback is possible.
+          image: nazariybu/travelagency:16
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: travelagency-config
+            - secretRef:
+                name: travelagency-secrets
+
+          # requests = what the scheduler reserves on a node (and what the HPA % is counted from).
+          # limits   = the maximum: more memory -> the container is killed (OOMKilled) and restarted.
+          resources:
+            requests:
+              cpu: 250m            # 0.25 of a CPU core
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+
+          # Probes = health checks that kubelet does itself (the same URL as Ansible and the AWS ALB use).
+          # startup:   the app starts slowly (Spring + Flyway + Hibernate): wait up to 3 min before other probes.
+          startupProbe:
+            httpGet:
+              path: /form-login
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          # readiness: is the pod ready for users? No -> the Service sends it no traffic (it is NOT restarted).
+          readinessProbe:
+            httpGet:
+              path: /form-login
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness:  is the pod alive? 3 fails in a row -> kubelet restarts the container.
+          livenessProbe:
+            httpGet:
+              path: /form-login
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          securityContext:
+            allowPrivilegeEscalation: false   # no sudo/setuid tricks inside
+            capabilities:
+              drop: ["ALL"]                   # Tomcat on port 8080 needs no special Linux rights

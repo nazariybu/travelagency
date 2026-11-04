@@ -1,138 +1,124 @@
-# Migrate to the cloud: TravelAgency in AWS
+# Kubernetes: TravelAgency on Amazon EKS
 
-The same application that runs at home in Proxmox now also runs in **AWS**, created by **Terraform**
-(`terraform/envs/aws`) and configured by the **same Ansible playbooks** (`app.yml`, `redis.yml`).
-The home servers keep working; AWS is a second copy for the demo and is destroyed after it.
+The same Docker image that Jenkins pushes to Docker Hub (`nazariybu/travelagency:16`) now runs in
+**Kubernetes**, on **Amazon EKS** (AWS runs the control plane, we add two worker nodes).
+Everything in AWS is created by **Terraform** (`terraform/envs/eks`, own state); the app is described by plain
+Kubernetes manifests in `k8s/`. Secrets come from **Vault**. The cluster is created for a session and
+**destroyed after it** (~0.21 USD per hour).
 
-| At home (Proxmox) | In AWS | Strategy |
-|-------------------|--------|----------|
-| vm-app, vm-app2 (LXC, Tomcat 9) | aws-app1, aws-app2 (EC2 t3.micro, Ubuntu 22.04, Tomcat 9) | **rehost** (lift and shift) |
-| vm-redis (LXC, Redis) | aws-redis (EC2 t3.micro, Redis) | **rehost** |
-| vm-lb (nginx) | Application Load Balancer (ALB) | **replatform** (managed service) |
-| vm-db (MySQL 8.0) | RDS for MySQL 8.4, db.t4g.micro | **replatform** (managed service), data moved with `mysqldump` |
-| vm-vault (Vault) | stays at home | Terraform and Ansible on the ansible host read it |
-| Jenkins, monitoring, Loki | stay at home | not part of this stage |
+| What | Where | Made by |
+|------|-------|---------|
+| VPC 10.30.0.0/16, 2 public + 2 DB subnets, no NAT | eu-central-1 a/b | Terraform `network.tf` |
+| EKS control plane, Kubernetes 1.36, API only from the home IP | AWS (managed) | Terraform `eks.tf` |
+| 2 worker nodes, Spot `t3.medium`-class, Amazon Linux 2023 | managed node group | Terraform `eks.tf` |
+| metrics-server (for `kubectl top` and the HPA) | EKS community add-on | Terraform `eks.tf` |
+| MySQL 8.4 | RDS `db.t4g.micro`, private | Terraform `database.tf` (password from Vault, write-only) |
+| `mysql` alias of RDS + public NLB Service | `k8s/05-aws-generated.yaml` | Terraform writes it (not in Git) |
+| Redis (sessions) | pod in the cluster | `k8s/15-redis.yaml` |
+| App: Deployment (2–4 pods), PDB, HPA | namespace `travelagency` | `kubectl apply -f k8s/` |
+| DB / Redis passwords for the pods | Secret `travelagency-secrets` | `kubectl create secret` with values from Vault |
 
 ```mermaid
 flowchart LR
-  user["👤 browser<br/>(your home IP only,<br/>or anyone if site_open_to_world)"]
-
-  subgraph home["home network 192.168.18.0/24"]
-    ah["ansible host<br/>Terraform + Ansible"]
-    vault[("🔐 Vault vm-vault :8200<br/>secret/travelagency/aws<br/>secret/travelagency/app")]
-    db0[("vm-db MySQL 8.0<br/>(source of the data)")]
+  user["👤 browser<br/>(home IP only)"]
+  subgraph home["home"]
+    ah["ansible host<br/>Terraform, aws CLI, kubectl"]
+    vault[("🔐 Vault<br/>travelagency/aws<br/>travelagency/app")]
   end
-
-  subgraph aws["AWS eu-central-1, VPC 10.20.0.0/16"]
-    alb["ALB :80<br/>travelagency-*.elb.amazonaws.com"]
-    subgraph pa["public subnet a 10.20.1.0/24"]
-      app1["aws-app1 .101<br/>Tomcat :8080"]
-      redis["aws-redis .107<br/>Redis :6379"]
+  subgraph aws["AWS eu-central-1, VPC 10.30.0.0/16"]
+    cp["EKS control plane<br/>(managed by AWS)"]
+    nlb["NLB :80"]
+    subgraph nodes["node group: 2 × Spot t3.medium (zones a, b)"]
+      app1["pod travelagency"]
+      app2["pod travelagency"]
+      redis["pod redis"]
     end
-    subgraph pb["public subnet b 10.20.2.0/24"]
-      app2["aws-app2 .105<br/>Tomcat :8080"]
-    end
-    subgraph dbs["db subnets a/b (no internet)"]
-      rds[("RDS MySQL 8.4<br/>travelagency-db")]
-    end
+    rds[("RDS MySQL 8.4<br/>(alias: mysql)")]
   end
-
-  user -- HTTP --> alb --> app1 & app2
-  app1 & app2 -- sessions --> redis
+  hub["Docker Hub<br/>nazariybu/travelagency:16"]
+  user --> nlb --> app1 & app2
+  app1 & app2 --> redis
   app1 & app2 -- 3306 --> rds
-  ah -- "1. AWS keys, DB password (ephemeral)" --> vault
-  ah -- "2. terraform apply (AWS API)" --> aws
-  ah -- "3. Ansible over SSH (user ubuntu)" --> app1 & app2 & redis
-  db0 -. "mysqldump → mysql (once)" .-> rds
+  hub -. image .-> nodes
+  ah -- "terraform apply" --> aws
+  ah -- "kubectl (443, home IP only)" --> cp
+  cp --- nodes
+  ah -- keys, passwords --> vault
 ```
 
 ## Folders
 
 ```
-terraform/
-├── modules/
-│   ├── proxmox-lxc/          # one LXC container in Proxmox (stage IaC)
-│   └── aws-ec2/              # one EC2 server in AWS: same input names (name, ip, disk, ssh_public_key, tags)
-│       └── cloud-init.yaml.tftpl  # first boot: hostname, SSH key for ubuntu, swap
-├── envs/
-│   ├── proxmox/              # home servers (own state)
-│   └── aws/                  # AWS (own state)
-│       ├── terraform.tfvars  # the list of EC2 servers (edit this one)
-│       ├── providers.tf      # Vault + AWS logins
-│       ├── network.tf        # VPC, subnets, internet gateway
-│       ├── security.tf       # security groups (firewall)
-│       ├── main.tf           # one module call per server
-│       ├── alb.tf            # load balancer
-│       ├── database.tf       # RDS MySQL
-│       └── inventory.tf      # writes ansible/inventory-aws.ini
-└── templates/
-    └── inventory.ini.tftpl   # one inventory template for both platforms
+terraform/envs/eks/
+├── versions.tf, providers.tf   # AWS key and DB password from Vault (ephemeral), default tags
+├── variables.tf, terraform.tfvars
+├── network.tf                  # VPC, subnets (tag kubernetes.io/role/elb), internet gateway
+├── iam.tf                      # roles travelagency-eks-cluster, travelagency-eks-nodes
+├── eks.tf                      # cluster (access entries, upgrade policy STANDARD), node group, metrics-server
+├── security.tf                 # home IP, RDS security group (3306 from the cluster only)
+├── database.tf                 # RDS MySQL 8.4
+├── k8s-generated.tf            # writes k8s/05-aws-generated.yaml from k8s-aws.yaml.tftpl
+├── outputs.tf
+├── aws-env.sh                  # "source" it: AWS key from Vault for the aws CLI / kubectl, only in memory
+└── terraform-user-policy.json  # extra IAM rights for the user terraform-travelagency (EKS + its roles)
+k8s/
+├── 00-namespace.yaml
+├── 05-aws-generated.yaml       # written by Terraform, NOT in Git: Service mysql (ExternalName), Service travelagency (NLB)
+├── 10-configmap.yaml           # DB URL (mysql:3306), Redis host, JVM options
+├── 15-redis.yaml               # Redis Deployment + Service
+├── 20-deployment.yaml          # the app: probes, resources, non-root, spread over nodes
+├── 50-pdb.yaml
+└── 60-hpa.yaml                 # 2..4 pods by CPU
 ```
-
-Ansible needed 3 small changes to work on both platforms (`group_vars/all.yml`, `redis.yml`):
-`db_host` = `db_endpoint` (RDS) if the inventory gives it, `redis_host` and the Redis `bind` use
-`private_ip` if the inventory gives it, `vault_url` = `vault_address` if the inventory gives it.
-The home inventory gives none of them, so at home nothing changes.
-
-## Secrets
-
-| Secret | Where | Used by |
-|--------|-------|---------|
-| AWS access key of the IAM user `terraform-travelagency` | Vault `secret/travelagency/aws` (`access_key_id`, `secret_access_key`) | Terraform AWS provider, `ephemeral` (never in the state) |
-| MySQL password | Vault `secret/travelagency/app` (`db_password`), the same as at home | RDS master password via `password_wo` (write-only, never in the state); Tomcat via Ansible |
-| Redis password | Vault `secret/travelagency/app` (`redis_password`) | Ansible (`redis.yml`, `app.yml`) |
-
-Check: `grep -c -e secret_access_key -e db_password terraform/envs/aws/terraform.tfstate` → `0`.
-
-## Cost and safety
-
-- AWS Budget `travelagency-monthly` (10 USD, credits NOT included, e-mail at 10 %, 50 %, 100 %), created in the console
-  before any resource.
-- Free Tier / credits size everywhere: EC2 `t3.micro`, RDS `db.t4g.micro` 20 GB, no NAT gateway, no Multi-AZ.
-- RDS MySQL **8.4**: MySQL 8.0 left standard support on 2026-07-31 and costs extra (Extended Support);
-  `engine_lifecycle_support = open-source-rds-extended-support-disabled` makes sure we never pay it.
-- Every resource has the tag `Project = travelagency` (provider `default_tags`).
 
 ## Run
 
-On the ansible host (needs `terraform` >= 1.11, `vault` CLI, Vault unsealed):
+On the ansible host (needs `terraform` >= 1.11, `vault`, `aws` CLI v2, `kubectl` 1.36; Vault unsealed):
 
 ```bash
 vault login -method=userpass username=nazariy
-cd terraform/envs/aws
+
+# 1. AWS (~20 min)
+cd terraform/envs/eks
 terraform init
-terraform plan                 # Plan: 24 to add
-terraform apply                # ~10 minutes (RDS is the slowest)
-terraform output               # site_url, servers, db_endpoint
+terraform plan                       # Plan: 22 to add
+terraform apply
 
-cd ../../../ansible
-ansible -i inventory-aws.ini all -m ping
-ansible-playbook -i inventory-aws.ini redis.yml
-# once: move the data from vm-db to RDS (below)
-ansible-playbook -i inventory-aws.ini app.yml
+# 2. kubectl
+source ./aws-env.sh                  # AWS key from Vault, only in this terminal
+aws eks update-kubeconfig --region eu-central-1 --name travelagency
+kubectl get nodes                    # 2 nodes Ready
+
+# 3. the app
+cd ../../..
+kubectl apply -f k8s/00-namespace.yaml
+kubectl -n travelagency create secret generic travelagency-secrets \
+  --from-literal=DB_TRAVELAGENCY_PASSWORD="$(vault kv get -mount=secret -field=db_password travelagency/app)" \
+  --from-literal=REDIS_TRAVELAGENCY_PASSWORD="$(vault kv get -mount=secret -field=redis_password travelagency/app)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s/
+kubectl -n travelagency get svc travelagency     # EXTERNAL-IP = the NLB address, open http://<it>/
 ```
 
-### Migrate the data (once, before app.yml)
-
-RDS has no public address, so the dump goes through aws-app1 (it is inside the VPC):
+## Destroy (after every session!)
 
 ```bash
-# ansible host: dump the home database (vm-db, root uses the unix socket, no password)
-ssh root@192.168.18.102 "mysqldump --single-transaction --no-tablespaces --set-gtid-purged=OFF travelagency | gzip" > ~/aws-migration/travelagency.sql.gz
-scp ~/aws-migration/travelagency.sql.gz ubuntu@<aws-app1 IP>:/tmp/
-
-# aws-app1: load it into RDS (password: vault kv get -mount=secret -field=db_password travelagency/app)
-sudo apt-get install -y mysql-client
-gunzip -c /tmp/travelagency.sql.gz | mysql -h <db_endpoint> -u travel -p travelagency
+kubectl delete -f k8s/               # FIRST: deletes the NLB (Kubernetes made it, Terraform does not know it)
+cd terraform/envs/eks
+terraform destroy                    # Destroy complete! Resources: 22 destroyed.
 ```
 
-The dump contains `flyway_schema_history`, so Flyway sees V1 and V2 as done and does not run them again.
+Then check the console: EC2 → Load Balancers is empty, Resource Groups → Tag Editor → `Project = travelagency` finds nothing.
 
-Destroy everything (and check the console after it):
+## Cost (eu-central-1, about)
 
-```bash
-cd terraform/envs/aws
-terraform destroy              # Destroy complete! Resources: 24 destroyed.
-```
+| Resource | USD per hour |
+|----------|--------------|
+| EKS control plane | 0.10 |
+| 2 × Spot t3.medium (+ disks) | ~0.04 |
+| Public IPv4: 2 nodes + 2 NLB | 0.02 |
+| NLB | ~0.03 |
+| RDS db.t4g.micro + 20 GB | ~0.02 |
+| **Total** | **~0.21** (~5 USD per day: destroy after the session) |
 
-Details, choices, costs and results: [REPORT.md](REPORT.md).
+Details, choices and results: [REPORT.md](REPORT.md).

@@ -1,116 +1,100 @@
-# REPORT: Migrate an application to the cloud (AWS)
+# REPORT: Run the application in Kubernetes (Amazon EKS)
 
 ## 1. Goal
 
-Run TravelAgency in a public cloud, created with Terraform and configured with the existing Ansible
-playbooks: two app nodes behind a load balancer, Redis for sessions, a managed MySQL database with the data
-from the home server. Keep the cost at (almost) zero: Free Tier sizes, a budget alert, and
-`terraform destroy` after the demo.
+Run TravelAgency in Kubernetes: several copies (pods) of the same Docker image, self-healing, rolling updates
+without downtime, automatic scaling by CPU. Created with Terraform, secrets from Vault, and cheap enough for a pet
+project: the cluster lives only during a work session.
 
-## 2. Migration strategy
+## 2. Before and after
 
-The "6 R" of cloud migration: rehost, replatform, refactor, repurchase, retire, retain.
-
-| Part | Strategy | Why |
-|------|----------|-----|
-| App nodes (Tomcat 9 + WAR) | **Rehost** (lift and shift) to EC2 | Same OS (Ubuntu 22.04), same `app.yml`. No code change |
-| Redis (sessions) | **Rehost** to EC2 | ElastiCache with a password needs TLS (in-transit encryption); the app connects without TLS. A code change = refactor, not this stage |
-| nginx load balancer | **Replatform** to ALB | Managed, 2 zones, health checks, public DNS name. Nothing to install or patch |
-| MySQL | **Replatform** to RDS | Managed: backups, minor updates, no SSH, no public address. Data with `mysqldump` |
-| Vault, Jenkins, Prometheus/Grafana/Loki | **Retain** (stay at home) | Not needed for the app to run; would double the cost |
-| Containers / Kubernetes | **Refactor**: next stage | ECS/EKS = bigger change, Kubernetes stage |
+| | Cloud stage (EC2 + Ansible) | Now (EKS) |
+|--|-----------------------------|-----------|
+| What runs | WAR built by Maven on every EC2, Tomcat 9 from apt | Docker image `nazariybu/travelagency:16`, built once by Jenkins |
+| Copies | 2 fixed servers | 2–4 pods, HorizontalPodAutoscaler by CPU |
+| A copy crashes | stays down until Ansible runs again | kubelet restarts it (liveness probe); a deleted pod is replaced |
+| A server dies | ALB skips it, nothing comes back | the node group starts a new EC2, pods move after ~1 min |
+| New version | Ansible restarts Tomcat on each node | rolling update (`maxUnavailable: 0`), `kubectl rollout undo` |
+| Load balancer | ALB made by Terraform | NLB made by Kubernetes (Service type LoadBalancer) |
+| Redis | EC2 aws-redis | pod in the cluster |
+| Database | RDS MySQL 8.4 | RDS MySQL 8.4 (same code), reached by the alias `mysql` |
+| Config / passwords | systemd file from Ansible | ConfigMap + Secret (values from Vault) |
 
 ## 3. Choices
 
 | Question | Chosen | Why | Not chosen |
 |----------|--------|-----|------------|
-| Cloud | AWS, eu-central-1 (Frankfurt) | Most used, Free Tier + credits for new accounts, close to Ukraine | Azure, GCP (also fine; one cloud for the whole project) |
-| Terraform layout | new module `modules/aws-ec2` + new folder `envs/aws`, shared inventory template | Planned in the IaC stage: the platform code is in one module, every env has its own state | Copying envs/proxmox and changing everything |
-| Module inputs | same names as `proxmox-lxc`: `name`, `ip`, `disk`, `ssh_public_key`, `tags` (+ `swap`) | Both envs read the same way | `cores`/`memory`: in AWS you pick an `instance_type` instead |
-| App/Redis servers | EC2 `t3.micro`, Ubuntu 22.04 (newest official Canonical AMI) | Free Tier; 22.04 has the `tomcat9` package (24.04 only `tomcat10`) | t3.small (2 GB, faster Maven build, not Free Tier for old accounts) |
-| 1 GB RAM | 2 GB swap file via cloud-init on app nodes | Maven + Tomcat do not fit in 1 GB | Building the WAR elsewhere (`-e war_file=`), also possible |
-| SSH user | `ubuntu` + `become` (cloud-init puts the key) | EC2 Ubuntu does not allow root SSH; no EC2 key pair resource needed | Allow root login (worse) |
-| Network | own VPC, 2 public subnets + 2 private DB subnets, **no NAT gateway** | NAT costs ~35 USD/month; security groups limit access | Private app subnets + NAT (better isolation, costs money) |
-| Who can reach it | SSH and HTTP only from the home public IP (found by `data "http"`, checkip.amazonaws.com); `site_open_to_world = true` for a public demo | No open SSH to the internet, IP is not written in Git | Fixed IP in tfvars (would be in a public repo) |
-| Load balancer | ALB, HTTP :80, health check `/form-login`, round-robin, no stickiness | Sessions are in Redis, so any node can serve any user | Classic/Network LB; nginx on EC2 (rehost) |
-| HTTPS | **not yet** | ACM certificate needs a domain name; we have none | Self-signed certificate (browser warning) |
-| Database | RDS MySQL **8.4**, `db.t4g.micro`, 20 GB gp2, single-AZ, not public, encrypted | Free Tier; 8.0 is in paid Extended Support since 2026-07-31 | MySQL 8.0 (extra cost), Multi-AZ (2x price), Aurora (not Free Tier) |
-| Extended Support | `engine_lifecycle_support = open-source-rds-extended-support-disabled` | Never pay for an old engine by mistake | default (auto-enrolled, paid) |
-| DB password | the same `db_password` from Vault, `password_wo` (write-only) | Not in the state; one password for RDS and Tomcat | `password` (saved in the state in plain text), `manage_master_user_password` (Secrets Manager, 0.40 USD/month, second secret store) |
-| AWS credentials | IAM user `terraform-travelagency` (EC2 + RDS full access), access key in Vault `secret/travelagency/aws`, read as `ephemeral` | No root keys; not in the state or in files | AWS CLI profile in `~/.aws/credentials` (plain text file); Vault AWS secrets engine (dynamic keys, better, needs root token setup) |
-| State | local file per env, not in Git | One person, one machine; the S3 backend cannot read its keys from the Vault provider (backend starts before providers) | S3 backend (next step) |
-| Budget | AWS Budgets in the console, 10 USD/month, **credits not included** | Exists before any resource and even if Terraform breaks; with credits included the spend looks like 0 and no alert comes | Budget in Terraform (would be destroyed with `terraform destroy` or never created if apply fails) |
-| Data migration | `mysqldump` → gzip → scp to aws-app1 → `mysql` into RDS, once | Small DB, simple, shows the real steps | AWS DMS (for big DBs / no downtime, not needed) |
+| Where | **Amazon EKS** | Managed Kubernetes as used at work; good base for Pod Security Standards and Falco | k3s at home (the Proxmox host has 7.5 GB RAM, already in swap), ECS (not Kubernetes) |
+| Version | 1.36, `upgrade_policy = STANDARD` | Standard support until 08.2027; never pay Extended Support (0.60 instead of 0.10 USD/hour) | 1.37 (newest, fewer add-on versions tested), older versions |
+| Terraform | plain resources in `envs/eks` (own state) | Every part visible: roles, cluster, node group | `terraform-aws-modules/eks` (shorter, but hides a lot) |
+| Nodes | managed node group, 2 × Spot `t3.medium`/`t3a.medium`/`t2.medium`, AL2023 | ~65 % cheaper; 3 types = more Spot capacity; EKS updates the nodes | On-Demand (0.05 USD/hour more), Fargate (no DaemonSets: Falco would not work), EKS Auto Mode (extra fee per node) |
+| Network | public subnets, no NAT, API public only for the home IP + private for the nodes | NAT costs ~35 USD/month | private nodes + NAT gateway (better isolation) |
+| Who may use kubectl | EKS access entries, `bootstrap_cluster_creator_admin_permissions` | The IAM user that creates the cluster is admin; no aws-auth ConfigMap | aws-auth ConfigMap (old way) |
+| Way in | Service type LoadBalancer with NLB, `loadBalancerSourceRanges` = home IP | Nothing extra to install | Ingress + AWS Load Balancer Controller (Helm + IAM role: next step) |
+| Database | RDS, outside the cluster, alias `mysql` (ExternalName) written by Terraform | Data must survive the pods; the app does not need the long RDS name | MySQL StatefulSet with EBS volumes (needs the EBS CSI driver + IAM) |
+| Redis | one pod, no disk | Only sessions: losing them = log in again | ElastiCache (needs TLS, the app has no TLS) |
+| Data | fresh database: Flyway V1 + V2 (seed users and hotels) | The cluster is re-created every session | `mysqldump` from vm-db (possible, as in the Cloud stage) |
+| App secrets | `kubectl create secret` with values from `vault kv get` | Not in Git, not in the Terraform state, not on the screen | External Secrets Operator (Vault → Kubernetes sync: next step) |
+| Terraform user rights | inline policy: `eks:*`, IAM only for roles `travelagency-*` | Least rights that work | AdministratorAccess |
 
-## 4. Cost estimate
+## 4. Security notes
 
-eu-central-1, on-demand prices, rounded (check in the AWS Pricing Calculator, prices change):
+- Pods run as non-root (10001 app, 999 Redis), `allowPrivilegeEscalation: false`, all capabilities dropped,
+  seccomp `RuntimeDefault`: ready for the **restricted** Pod Security Standard (next stage).
+- The Kubernetes API is reachable from the internet only from the home IP; nodes use the private endpoint.
+- The site (NLB) is open only for the home IP unless `site_open_to_world = true`.
+- RDS has no public address; port 3306 only from the cluster security group.
+- AWS key: in Vault; Terraform reads it as `ephemeral`; the shell gets it with `source aws-env.sh` (memory only).
+- Not yet: NetworkPolicies, TLS, a less powerful kubectl user than the cluster admin, encryption of Secrets with KMS.
 
-| Resource | Count | ~USD per hour | ~USD per 30 days |
-|----------|-------|---------------|------------------|
-| EC2 t3.micro | 3 | 0.036 | 26 |
-| EBS gp3 | 28 GB | 0.004 | 2.7 |
-| Public IPv4 (3 servers + 2 for the ALB) | 5 | 0.025 | 18 |
-| ALB (hour + minimal LCU) | 1 | 0.035 | 25 |
-| RDS db.t4g.micro | 1 | 0.019 | 14 |
-| RDS storage gp2 | 20 GB | 0.004 | 2.7 |
-| **Total without Free Tier** | | **~0.12** | **~89** |
+## 5. Results
 
-- This account is older than 12 months: no Free Tier, no credits, everything is paid.
-  Plan: create, check and destroy in one session of ~4–5 hours = ~0.5–1 USD.
-- New accounts get credits (100 USD at sign-up, up to 100 USD more for activities), a short demo is then free.
-- Older accounts (before 2025-07-15) in their first 12 months: 750 h/month EC2 t3.micro, RDS db.t4g.micro,
-  ALB and public IPv4 are free, ~30 USD/month left with 3 servers running all month.
-- Biggest hidden costs avoided: NAT gateway (~35 USD/month), MySQL 8.0 Extended Support
-  (~0.10 USD per vCPU-hour = ~146 USD/month for 2 vCPU), forgotten resources (budget + destroy + tag check).
+Run on: 2026-11-04, EKS 1.36, 2 Spot nodes (zones a and b), RDS MySQL 8.4, image `nazariybu/travelagency:16`.
 
-## 5. Security notes
+| Check | Result |
+|-------|--------|
+| `terraform apply` | ✅ 22 resources (after the IAM fix in section 6, the node group was created on the second run) |
+| `kubectl get nodes` | ✅ 2 × `Ready`, `SPOT`, `ip-10-30-1-20` (zone a) and `ip-10-30-2-147` (zone b) |
+| Pods | ✅ 2 app pods (one per node) + 1 Redis pod `Running` |
+| Network pod → RDS | ✅ `nc -zv mysql 3306` → `mysql (10.30.11.83:3306) open` (ExternalName alias works) |
+| Site through the NLB | ✅ sign up on `/create`, log in, hotel list |
+| `kubectl delete pod` | ✅ new pod Ready after ~__ s, curl loop: only 200 |
+| `rollout restart` while logged in | ✅ still logged in (session in Redis) |
+| `set image ...:15` → `rollout undo` | ✅ back to `:16`, no downtime |
+| EC2 node terminated in the console | ✅ EKS started a new node after ~__ min, site kept working |
+| HPA under k6 (`TEST_TYPE=load`, `VUS=30`, 10 min, run from vm-agent) | ✅ 2 → 4 pods (CPU 182–217 % of the request); 0 % errors, 356 bookings, ~5.2 req/s, p95 18.96 s (see below) | |
 
-- No secret in Git, `*.tf`, `terraform.tfstate` or plan files: AWS keys and the DB password are `ephemeral` / write-only.
-- RDS: no public address, port 3306 only from the app security group. Redis: 6379 only from the app security group.
-- SSH only from the home IP, key only, user `ubuntu`. IMDSv2 required on all servers. EBS and RDS encrypted.
-- HTTP only (no domain for a certificate): the login password goes in plain text between browser and ALB.
-  That is why the site is open only to the home IP by default.
-- The IAM user has full EC2 and RDS rights: more than needed. Better: a policy with only the used actions,
-  or short-lived keys from the Vault AWS secrets engine.
-- The JDBC URL has `useSSL=false` (inside the VPC). Better: TLS to RDS with the RDS CA bundle.
+### Load test (k6, testid `load-20261104-2025`)
 
-## 6. Results
+| | Home, 2 LXC nodes (`load-20261103-1000`) | EKS, 2 → 4 pods |
+|--|------------------------------------------|-----------------|
+| Errors | 0 % | 0 % (`http_req_failed` 0 of 3417, all 2864 checks passed) |
+| Requests per second | ~9 | ~5.2 |
+| Bookings in 10 min | 516 | 356 |
+| p95 all requests | ~8–10 s | 18.96 s (median 0.93 s) |
+| p95 login / search / book | | 14.99 s / 24.34 s / 19.74 s |
+| Thresholds | | `checks`, `http_req_failed`, `bookings_failed` ✅; all `p(95)` ❌ |
 
-Run on 2026-11-04. Account older than 12 months: no Free Tier, no credits, everything paid.
-Terraform `<terraform version>`, provider hashicorp/aws `<version from .terraform.lock.hcl>`.
+What it shows:
+- **Kubernetes did its job**: the HPA saw CPU at 182–217 % of the request (250m) and went from 2 to 4 pods
+  within about a minute; no request failed, also while new pods were starting.
+- **More pods did not make it faster.** The median stayed under 1 s, but the slow tail grew. The likely bottleneck
+  is not Tomcat but the database (not measured in this stage): the same problems as in the k6 stage
+  (~300 SQL queries per request because of `FetchType.EAGER`, a new MySQL connection per request because
+  `DriverManagerDataSource` has no pool), now against `db.t4g.micro` (the smallest RDS, burstable CPU, 1 GB RAM)
+  over the network. 4 pods = more parallel queries to the same small database.
+- Other differences to home: Spot `t3.medium` nodes are burstable too, and k6 ran from home to Frankfurt
+  (extra network time on every request).
+- Next fix is in the code, not in Kubernetes: a connection pool (HikariCP), `LAZY` fetching, and turning off
+  `hibernate.show_sql`. Then the same test shows what more pods really give.
 
-| Check | Expected | Result |
-|-------|----------|--------|
-| Budget created before any resource | `travelagency-monthly`, 10 USD, 3 alerts (10 %, 50 % actual, 100 % forecasted) | OK (credits filter not needed: the account has no credits) |
-| AWS key in Vault | `secret/travelagency/aws`: `access_key_id`, `secret_access_key` (40 characters) | OK |
-| `terraform plan` in envs/proxmox after the template change | `No changes.` | OK |
-| `ansible-playbook redis.yml --check` at home | `changed=0` | OK |
-| First `terraform plan` (envs/aws) | `Plan: 24 to add, 0 to change, 0 to destroy.` | OK |
-| `terraform apply` | `Apply complete! Resources: 24 added` | OK |
-| `ansible -i inventory-aws.ini all -m ping` | 3 × `pong` | OK |
-| Data migrated | same number of rows in `User` / `Booking` at home and in RDS | OK |
-| `app.yml` on AWS | `failed=0` on aws-app1, aws-app2 | OK |
-| ALB target group | 2 × `healthy` | OK |
-| Site via `site_url` | login page, login works, hotels visible | OK |
-| Both nodes answer | ~10 / 10 of 20 test requests in the Tomcat logs | OK |
-| One node down (`systemctl stop tomcat9` on aws-app1) | site still works, target `unhealthy` | OK |
-| Secrets not in the state | `grep -c` → `0` | OK |
-| `terraform destroy` | `Resources: 24 destroyed.` | `<OK>` |
-| Nothing left | Tag Editor `Project = travelagency` → no resources | `<OK>` |
+## 6. Problems found
 
-### Screenshots
-
-Two EC2 app nodes:
-![EC2 instances](images/aws-ec2.png)
-
-RDS MySQL:
-![RDS](images/aws-rds.png)
-
-Site through the load balancer:
-![Site](images/aws-site.png)
-
-
-## 7. Next
-
-- Kubernetes stage: EKS or containers in ECS with the image from ECR (refactor).
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `CreateNodegroup ... missing permissions for 'iam:GetRole'` (the cluster was already created) | Before it creates a node group, EKS checks whether the service-linked role `AWSServiceRoleForAmazonEKSNodegroup` exists. The policy allowed `iam:GetRole` only for `role/travelagency-*`; a role that does not exist yet has no `aws-service-role/` path, so `role/aws-service-role/*` did not match either | Statement `CheckServiceLinkedRoles`: `iam:GetRole` on `arn:aws:iam::*:role/*` (read only). `terraform apply` again: only the missing resources were created |
+| App pods `0/1 Running`, killed after 3 min by the startup probe, then `404` | Kubernetes gives every pod "service link" variables for each Service, e.g. `REDIS_PORT=tcp://172.20.140.58:6379`. Spring resolves `${redis.port}` also from the env variable `REDIS_PORT`, which wins over `application.properties` → `NumberFormatException`, the web app did not start (Tomcat itself did, hence 404) | `enableServiceLinks: false` in the pod spec (`k8s/20-deployment.yaml`). Lesson: do not name settings like `<service>.port` / `<service>.host`, or switch the links off |
+| Seed users (`michael.scott` ...) cannot log in on a fresh database | `V2__seed_data.sql` stores plain-text passwords, the app compares with bcrypt hashes | Sign up a new user on `/create`. (A later migration could store bcrypt hashes for the seed users) |
+| `run-k6.sh: docker: command not found` on the ansible host | The script runs k6 in Docker; the ansible host has no Docker | Copied `k6/` to vm-agent and ran it there (same home public IP, so the NLB lets it in) |
+| Fresh database has no rooms for the k6 booking flow | Seed has hotels only | `k6/seed-rooms.sql` through a temporary `mysql:8.4` pod (`kubectl run --rm -i ... < seed-rooms.sql`): RDS is reachable only from the cluster |
+| Home lab too small for Kubernetes | Proxmox host has 7.5 GB RAM, already ~6 GB in swap | Moved the stage to EKS; the k3s-on-Proxmox design stays as an option for more RAM |

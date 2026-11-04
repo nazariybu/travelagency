@@ -1,0 +1,8 @@
+# Namespace = a "folder" inside the cluster. Everything of the app lives in "travelagency",
+# so "kubectl -n travelagency get all" shows only our objects, and one command can remove them all.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: travelagency
+  labels:
+    app.kubernetes.io/part-of: travelagency
