@@ -1,134 +1,113 @@
-# Secrets in HashiCorp Vault
+# Infrastructure as Code: Terraform
 
-All passwords and tokens of TravelAgency live in **HashiCorp Vault** on vm-vault. They are not in Git,
-not in a `.env` file on the ansible host and not in Jenkins. Ansible reads them from Vault at the moment
-a playbook needs them.
+The LXC containers of TravelAgency in Proxmox are described in **Terraform** code.
+Before, `ansible/provision.yml` created them. Now Terraform does, and Ansible only configures
+what is **inside** the servers (packages, configs, the app).
 
-Before: secrets were in `ansible/.env` (plain text on the ansible host), loaded with
-`set -a; source .env`, and the DB and Redis passwords were copied a second time into Jenkins credentials.
-Now: one place, every reader has its own login and may read only what it needs, every access is checked.
+| Tool | Answers the question | Files |
+|------|----------------------|-------|
+| Terraform | **Which servers exist** and how big they are | `terraform/` |
+| Ansible | **What runs inside** each server | `ansible/` |
+| Vault | **Secrets** for both | `vault/`, Vault on vm-vault |
 
 ```mermaid
 flowchart LR
-  subgraph px["Proxmox host 192.168.18.200 (LXC containers)"]
-    subgraph v["vm-vault · .109"]
-      vault[("🔐 Vault :8200<br/>KV v2: secret/travelagency/*<br/>raft storage, sealed after restart")]
-    end
-
-    subgraph ah["ansible host"]
-      me["👤 you<br/>vault login (userpass)<br/>token in ~/.vault-token, 8 h"]
-      an1["Ansible<br/>community.hashi_vault"]
-    end
-
-    subgraph ag["vm-agent · .104"]
-      jk["🤖 Jenkins Deploy stage<br/>AppRole jenkins-deploy"]
-      an2["Ansible app.yml"]
-    end
-
-    app["☕ vm-app, vm-app2<br/>DB + Redis password"]
-    db[("🐬 vm-db")]
-    rd[("🧠 vm-redis")]
-    mon["📊 vm-monitor<br/>Grafana, Telegram, pve-exporter"]
+  subgraph ah["ansible host"]
+    tf["Terraform<br/>terraform/envs/proxmox"]
+    st[("terraform.tfstate<br/>(local, not in Git)")]
+    inv["ansible/inventory.ini<br/>(written by Terraform)"]
+    an["Ansible playbooks"]
   end
+  vault[("🔐 Vault vm-vault :8200<br/>secret/travelagency/proxmox")]
+  px["Proxmox API<br/>192.168.18.200:8006"]
+  lxc["9 LXC containers<br/>vm-app ... vm-vault"]
 
-  me --> an1
-  an1 -- "read app, monitoring, proxmox" --> vault
-  jk --> an2
-  an2 -- "read only app" --> vault
-  an1 & an2 -- "templates" --> app & db & rd
-  an1 -- "templates" --> mon
-  mon -. "blackbox: /v1/sys/health (sealed = SiteDown)" .-> vault
-
-  classDef sec fill:#fde68a,stroke:#b45309,color:#000
-  class vault,me,jk sec
+  tf -- "1. token (ephemeral, not saved)" --> vault
+  tf -- "2. create / change / delete" --> px --> lxc
+  tf -- "remembers what it manages" --> st
+  tf -- "3. writes" --> inv --> an -- "SSH: configure inside" --> lxc
 ```
 
-## What is in Vault
+## Folders
 
-KV version 2 engine at `secret/` (keeps old versions of every secret).
+```
+terraform/
+├── modules/
+│   └── proxmox-lxc/        # HOW to make one server on Proxmox (one LXC container)
+├── envs/
+│   └── proxmox/            # WHAT exists here: the list of servers + Proxmox/Vault settings
+│       ├── terraform.tfvars    # the list of servers (edit this one)
+│       ├── providers.tf        # Vault + Proxmox logins
+│       ├── main.tf             # one module call per server
+│       └── inventory.tf        # writes ansible/inventory.ini
+└── templates/
+    └── inventory.ini.tftpl # Ansible inventory template, the same for every platform
+```
 
-| Path | Keys | Used by |
-|------|------|---------|
-| `secret/travelagency/app` | `db_password`, `redis_password` | `app.yml`, `redis.yml`, `monitoring.yml` (redis-exporter), Jenkins Deploy |
-| `secret/travelagency/monitoring` | `grafana_admin_password`, `pve_exporter_token`, `telegram_bot_token`, `telegram_chat_id` | `monitoring.yml` |
-| `secret/travelagency/proxmox` | `token_secret` | `provision.yml` |
+**Why like this.** A module is a reusable "recipe". `modules/proxmox-lxc` knows Proxmox; the rest does not.
+For the cloud stage we add `modules/<cloud>-vm` with the **same common inputs**
+(`name`, `ip`, `cores`, `memory`, `disk`, `ssh_public_key`, `tags`) and the **same outputs** (`name`, `ip`),
+and a new folder `envs/<cloud>` next to `envs/proxmox`. The list of servers and the inventory template stay.
+Each folder in `envs/` has its own state, so Proxmox and the cloud never touch each other.
 
-Not moved (yet): `dockerhub-creds` in Jenkins (used only by the Docker Hub push), the root `.env`
-for local `docker compose` on a laptop.
+## What Terraform manages
 
-## Who may read what
+| Server | vmid | IP | CPU | RAM MB | Disk GB | Nesting |
+|--------|------|----|-----|--------|---------|---------|
+| vm-app | 301 | 192.168.18.101 | 1 | 2048 | 8 | |
+| vm-db | 302 | 192.168.18.102 | 1 | 2048 | 8 | |
+| vm-jenkins | 303 | 192.168.18.103 | 1 | 2048 | 16 | ✅ |
+| vm-agent | 304 | 192.168.18.104 | 4 | 4096 | 32 | ✅ |
+| vm-app2 | 305 | 192.168.18.105 | 1 | 2048 | 8 | |
+| vm-lb | 306 | 192.168.18.106 | 1 | 512 | 8 | |
+| vm-redis | 307 | 192.168.18.107 | 1 | 512 | 8 | |
+| vm-monitor | 309 | 192.168.18.108 | 2 | 2048 | 16 | ✅ |
+| vm-vault | 310 | 192.168.18.109 | 1 | 512 | 8 | |
 
-| Who | Login (auth method) | Policy | Can |
-|-----|---------------------|--------|-----|
-| You on the ansible host (and Ansible started by you) | `userpass`, user `nazariy`, token for 8 h | `travelagency-admin` | read / write / delete `secret/travelagency/*` |
-| Jenkins Deploy stage | `approle`, role `jenkins-deploy`, only from `192.168.18.104` | `jenkins-deploy` | read `secret/travelagency/app` only |
-| root token | from `vault operator init` | `root` | everything; only for setup and emergencies |
+All: unprivileged Ubuntu 22.04 LXC, `local-lvm`, bridge `vmbr0`, gateway `192.168.18.1`,
+root SSH key `~/.ssh/id_ed25519.pub`, start on boot, tags `terraform` + group.
+The containers were created by Ansible earlier and **imported** into Terraform (not re-created).
 
-Policies are files in [`vault/policies/`](vault/policies).
+## Secrets
 
-## Files
+Terraform needs one secret: the Proxmox API token. It comes from Vault, `secret/travelagency/proxmox`, key
+`token_secret` (the same one Ansible used). It is read as an **ephemeral** resource: kept in memory during the
+run, never written to `terraform.tfstate` or to a plan file. The token ID `ansible@pve!ansible` is not secret.
 
-| File | What it is |
-|------|------------|
-| `ansible/vault.yml` | Installs Vault from the HashiCorp apt repository on `vault` hosts |
-| `ansible/vault.hcl.j2` | Vault config: raft storage, UI, listener :8200 (no TLS, home lab) |
-| `vault/policies/*.hcl` | Who may read/write which paths |
-| `ansible/group_vars/all.yml` | `vault_url`; `vault_app`, `vault_monitoring`, `vault_proxmox` = lookups `community.hashi_vault.vault_kv2_get`; all secret variables come from them |
-| `ansible/inventory.ini`, `ansible/provision.yml` | New LXC `vm-vault` (vmid 310, 192.168.18.109) |
-| `ansible/requirements.yml` | + collection `community.hashi_vault` |
-| `ansible/jenkins.yml` | + `hvac` and `community.hashi_vault` on the Jenkins agent |
-| `Jenkinsfile` | Deploy: no `db-password` / `redis-password`, AppRole login instead (`vault-role-id`, `vault-secret-id`) |
-| `ansible/prometheus.yml.j2` | Blackbox checks `/v1/sys/health`: sealed Vault = `SiteDown` in Telegram |
-| `ansible/app.yml`, `redis.yml`, `monitoring.yml` | Messages say Vault instead of `.env` |
-| `ansible/.env.example` | Removed: no secrets in `.env` any more |
+Vault login is your normal one: `vault login -method=userpass username=nazariy` (token in `~/.vault-token`).
 
 ## Run
 
-On the ansible host, in `ansible/` (needs the `vault` CLI and the Python library `hvac`, see REPORT.md):
+On the ansible host (needs `terraform` >= 1.10 and `vault` CLI):
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
-ansible-playbook provision.yml     # creates vm-vault
-ansible-playbook vault.yml         # installs Vault
-export VAULT_ADDR=http://192.168.18.109:8200
-vault login -method=userpass username=nazariy    # once in 8 hours
-ansible-playbook app.yml           # or any other playbook: secrets come from Vault
+vault login -method=userpass username=nazariy   # once in 8 hours (Vault must be unsealed)
+cd terraform/envs/proxmox
+terraform init        # first time / after a provider version change: downloads providers
+terraform plan        # shows what WOULD change. Read it!
+terraform apply       # shows the plan again, asks "yes", then changes Proxmox
+terraform output      # names and IPs
 ```
 
-## First start (once)
+| Task | What to do |
+|------|------------|
+| New server | add a line to `terraform.tfvars` (free `vm_id` and `ip`), `terraform apply`, then the Ansible playbook for its group |
+| More RAM / CPU | change the line, `terraform apply` (RAM change **restarts** the container) |
+| Remove a server | delete the line, `terraform apply` (**deletes the container and its disk**) |
+| See what Terraform manages | `terraform state list` |
+| Check that Proxmox = code | `terraform plan` → `No changes.` |
 
-```bash
-vault operator init -key-shares=3 -key-threshold=2   # 3 unseal keys + root token: keep them in a password manager
-vault operator unseal        # key 1
-vault operator unseal        # key 2 -> Sealed: false
-vault login                  # root token
-vault secrets enable -path=secret kv-v2
-vault policy write travelagency-admin ../vault/policies/travelagency-admin.hcl
-vault policy write jenkins-deploy     ../vault/policies/jenkins-deploy.hcl
-vault auth enable userpass
-vault auth enable approle
-# users, role, secrets: step by step in REPORT.md
-```
+Never change these containers by hand in the Proxmox UI: the next `terraform plan` shows it as a change and
+`apply` puts the code value back.
 
-## After a restart of vm-vault
+## Careful
 
-Vault starts **sealed** (it cannot decrypt its data). Playbooks and Jenkins fail with
-`Vault is sealed`, and Telegram gets `SiteDown ... /v1/sys/health`. Fix:
+- `vm-vault` restart = Vault is **sealed**: unseal it (root README.md) before Ansible/Terraform work again.
+- `vm-db` delete = the database is gone. Read every `terraform plan` before `apply`;
+  `must be replaced` or `destroy` next to vm-db / vm-vault = stop.
+- `terraform.tfstate` is the memory of Terraform. Lost state = Terraform does not know the containers
+  (they still run; fix: import again). Keep a copy; remote state comes with the cloud stage.
+- To recreate vm-vault itself Terraform needs Vault (chicken and egg). If vm-vault is lost, create it
+  once with the old playbook: `git show secrets-vault:ansible/provision.yml > /tmp/provision.yml`.
 
-```bash
-vault operator unseal    # key 1
-vault operator unseal    # key 2
-vault status             # Sealed  false
-```
-
-## Daily use
-
-| Task | Command |
-|------|---------|
-| Show keys of a secret | `vault kv get secret/travelagency/app` |
-| One value | `vault kv get -field=grafana_admin_password secret/travelagency/monitoring` |
-| Change one key (others stay) | `vault kv patch secret/travelagency/app redis_password=...` then `redis.yml`, `app.yml`, `monitoring.yml` |
-| Old versions | `vault kv metadata get secret/travelagency/app`, `vault kv get -version=1 ...` |
-| Who am I, how long | `vault token lookup` |
-
-Details, choices and results: [REPORT.md](REPORT.md).
+Details and choices: [REPORT.md](REPORT.md).

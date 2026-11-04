@@ -72,6 +72,20 @@ test-results/
 HELP.md
 .env
 
-
 # k6 run summaries
 k6/results/
+
+
+# Terraform
+# providers downloaded by "terraform init" (big binaries, every machine downloads its own)
+**/.terraform/
+# state: the memory of Terraform, describes the whole infrastructure. Never in Git
+*.tfstate
+*.tfstate.*
+# saved plans (terraform plan -out=...)
+*.tfplan
+# personal overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
