@@ -59,25 +59,25 @@ Run on 2026-11-04. Proxmox VE 9.1.4, provider bpg/proxmox 0.116.x.
 | Check | Expected | Result |
 |-------|----------|--------|
 | `pct config` of all 9 containers before import | same as `terraform.tfvars` | OK: cores, memory, swap 512, disk, nesting, IP, bridge all equal; no `onboot` line (autostart was off) |
-| `terraform version` | >= 1.10 | |
-| First `terraform plan` | `9 to import, 1 to add, 9 to change, 0 to destroy`, no `must be replaced` | |
+| `terraform version` | >= 1.10 | 1.17 |
+| First `terraform plan` | `9 to import, 1 to add, 9 to change, 0 to destroy`, no `must be replaced` | OK |
 | `terraform apply` | `Apply complete! Resources: 9 imported, 1 added, 9 changed, 0 destroyed.` | OK |
-| Proxmox UI | tags `terraform` + group on all 9, Notes "Managed by Terraform" | OK  |
-| `terraform plan` after apply | `No changes.` | |
-| `terraform state list` | 9 containers + `local_file.ansible_inventory` | |
-| `git diff ansible/inventory.ini` | only the header comment and whitespace | |
-| Token not in state | `grep -c token_secret terraform.tfstate` → `0` | |
-| Test server vm-tftest (create → destroy) | created in ~1 min, SSH works, then deleted | |
-| `ansible all -m ping` | 9 × `pong` | |
+| Proxmox UI | tags `terraform` + group on all 9, Notes "Managed by Terraform" | OK (screenshot below) |
+| `terraform plan` after apply | `No changes.` | OK |
+| `terraform state list` | 9 containers + `local_file.ansible_inventory` | OK: 10 lines |
+| `git diff ansible/inventory.ini` | only the header comment and whitespace | OK: + 2 comment lines, trailing spaces after vm-lb and empty lines at the end removed; hosts and IPs the same |
+| Token not in state | `grep -c token_secret terraform.tfstate` → `0` | OK: `0`, and `0` for `ansible@pve!ansible=` |
+| Test server vm-tftest (create → destroy) | created in ~1 min, SSH works, then deleted | OK: plan `2 to add, 1 to destroy` (the 1 = inventory file re-written), container 399 created, then removed with `1 to add, 2 to destroy` |
+| `ansible all -m ping` | 9 × `pong` | OK: 9 × `pong` from the generated inventory |
 
-![Proxmox tags](/images/terraform-proxmox-tags.png)
+![Proxmox tags](../images/terraform-proxmox-tags.png)
 
 ## 7. Problems found
 
 | # | Problem | Cause | Fix |
 |---|---------|-------|-----|
 | 1 | `terraform plan` failed: `failed to lookup token ... Code: 503 ... Vault is sealed` | vm-vault had been restarted earlier; a restarted Vault always starts sealed | `vault operator unseal` two times, then plan again. Terraform needs Vault for every plan/apply, like Ansible |
-| 2 | Right after `apply` the containers showed uptime ~2 min (vm-app: `00:01:57`) | `apply` restarted them. The provider restarts a container when it changes memory, network/IP, hostname, DNS or console. Which one changed here: see the saved plan | Check the plan for `~ memory`, `~ network_interface`, `~ initialization`, `~ console`. After a restart of vm-vault: unseal again. Next time look for these blocks in the plan before `apply` |
+| 2 | After `apply` all 9 containers had the same short uptime (`up 7 minutes`, vm-app in the UI `00:01:57`), vm-vault too | Confirmed by the Proxmox task log (`pvenode task list`): `vzreboot` of all 9 containers by `ansible@pve!ansible` (the token Terraform uses) in the same second, during `apply`. The Proxmox host itself was not restarted (up since 2026-10-26). The provider reboots a container after an update when memory, network/IP, hostname, DNS or console changed; the exact field: `terraform show import.tfplan` | Check the plan for `~ memory`, `~ network_interface`, `~ initialization`, `~ console`. After a restart of vm-vault: unseal again. Next time look for these blocks in the plan before `apply` |
 
 ## 8. Next
 
